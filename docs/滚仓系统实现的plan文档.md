@@ -577,117 +577,196 @@ roll/
 
 - 新用户可按 README 完成 dry-run。
 - Testnet 自动交易步骤完整。
-- live trading 默认关闭。
+- live trading 默认关闭（配置项 `strategy.live_trading_enabled` 默认为 false；程序当前亦不接实盘 signed `run-loop`）。
 - 文档明确风险和手动应急流程。
 
 ## 11. 系统使用方法
 
-以下是系统实现完成后的预期使用方式。具体命令以后续实现为准，但所有终端命令前必须先进入 Anaconda 环境：
+下文命令均以仓库根目录为当前目录。**每一条终端命令在执行前都必须先激活 Conda 环境**（Windows / Linux / macOS 相同）：
 
 ```bash
 conda activate roll-env
 ```
 
-### 11.1 准备配置
+随后在同一会话中执行 `python -m main …`。不要将 API Secret 写入仓库或 YAML；使用环境变量（见下）。
 
-1. 创建 Binance COIN-M Futures Testnet API Key。
-2. 在本地配置文件或环境变量中设置：
-   - `BINANCE_API_KEY`
-   - `BINANCE_API_SECRET`
-   - `BINANCE_ENV=testnet`
-   - `BINANCE_MARKET=coin_m_futures`
-3. 配置候选资产，例如：
+### 11.1 环境与配置文件
 
-```text
-candidate_assets = DOGE, AVAX, SHIB, WIF, PEPE, TON, HYPE
-min_monitor_symbols = 3
+1. **Conda 环境**：确保已创建并激活 `roll-env`（与上文一致）。
+2. **配置文件**：复制示例并编辑：
+
+```bash
+conda activate roll-env
+copy config\settings.example.yaml config\settings.yaml
 ```
 
-4. 配置风险参数：
+（Linux/macOS 使用 `cp config/settings.example.yaml config/settings.yaml`。）
 
-```text
-initial_leverage = 25
-kelly_multiplier = 0.25
-max_position_fraction = 0.15
-max_loss_per_trade = 0.02
-max_account_drawdown = 0.30
-cooldown_minutes = 60
+3. **候选标的与策略参数**：在 `config/settings.yaml` 中维护 `candidates`、`strategy`（如 `loop_interval_sec`、`initial_leverage`、`stop_adverse_fraction`、`kelly_p` / `kelly_b` 等）。具体字段以 `config/settings.example.yaml` 为准。
+
+### 11.2 配置 Binance Futures Testnet API Key
+
+1. 在 Binance **Futures Testnet** 控制台创建 **COIN-M Futures** 可用的 API Key（权限遵循最小化原则，**不要**开启提现）。
+2. 在**当前终端会话**中设置环境变量（Secret 勿入库）。
+
+**PowerShell（Windows）示例：**
+
+```powershell
+conda activate roll-env
+$env:BINANCE_API_KEY = "你的_testnet_key"
+$env:BINANCE_API_SECRET = "你的_testnet_secret"
 ```
 
-### 11.2 启动前检查
+**Bash 示例：**
 
-启动自动交易前必须确认：
+```bash
+conda activate roll-env
+export BINANCE_API_KEY="你的_testnet_key"
+export BINANCE_API_SECRET="你的_testnet_secret"
+```
 
-- 当前处于 `roll-env`。
-- 当前连接的是 Testnet。
-- `exchangeInfo` 至少筛选出 3 个可监测标的。
-- 当前 Binance Testnet 账户没有其他遗留持仓。
-- dry-run 已连续运行并输出合理的趋势评分和拒绝原因。
-- Testnet 下单和平仓闭环已经手动验收过。
+程序读取 **`BINANCE_API_KEY`** 与 **`BINANCE_API_SECRET`**。不要求设置 `BINANCE_ENV` / `BINANCE_MARKET`（若本地有其他脚本依赖可自行保留，本入口以 `settings.yaml` 的 `binance.rest_base` 与 `environment` 为准）。
 
-### 11.3 dry-run 运行
+### 11.3 安全开关（默认不开真实/Testnet 挂单）
 
-dry-run 模式用于验证数据、模型和决策，不真实下单。
+与自动挂单相关的默认策略如下：
 
-预期行为：
+| 模式 | 默认行为 | 显式开启方式 |
+| --- | --- | --- |
+| dry-run | **默认**：只拉行情、打印决策，**不发 signed 单** | 使用 `python -m main run-loop`（不要加 `--no-dry-run`） |
+| Testnet signed 自动交易 | **默认关闭**：即使加了 `--no-dry-run` 也会被拒绝 | `settings.yaml` 中 `strategy.testnet_signed_orders_enabled: true`，且 CLI 使用 `--no-dry-run`，且 REST 为官方 Testnet host |
+| 实盘（live）signed 自动交易 | **默认关闭且当前未实现**：`run-loop --no-dry-run` **仅允许** Testnet host | `strategy.live_trading_enabled` 预留为 **false**；将来接入实盘时必须仍为显式 true + 代码侧校验；**当前版本请勿将实盘 Key 用于本程序的 signed 循环** |
 
-- 扫描所有候选标的。
-- 输出每个标的趋势评分。
-- 输出最终选择的单一标的或 `no_trade`。
-- 输出如果真实交易会使用的方向、仓位、杠杆、止损和退出条件。
+### 11.4 启动 dry-run（推荐第一步）
 
-### 11.4 Testnet 自动交易
+dry-run **不会**向交易所下 signed 单，用于验证候选标的、趋势评分与风控日志。
 
-Testnet 自动交易模式用于验证完整闭环。
+**单轮验收（跑一轮即退出）：**
 
-预期行为：
+```bash
+conda activate roll-env
+python -m main run-loop --once
+```
 
-1. 启动后查询账户、持仓、未完成订单。
-2. 如果没有持仓，进入多标的监测。
-3. 如果某个标的趋势信号达标，获取交易锁。
-4. 设置杠杆，计算仓位，下单。
-5. 持仓期间只管理当前标的。
-6. 触发止损、追踪止损、趋势反转或最大持仓时间后平仓。
-7. 进入冷却期。
-8. 冷却结束后继续监测。
+**持续循环：**
 
-### 11.5 停止系统
+```bash
+conda activate roll-env
+python -m main run-loop
+```
 
-系统应支持两种停止方式：
+说明：
 
-- 优雅停止：停止开新仓，若已有持仓则继续管理到正常退出，或按配置执行立即平仓。
-- 紧急停止：立刻停止策略循环，查询当前持仓，并执行保护性平仓或提示人工平仓。
+- `binance.rest_base` 仍为 Testnet 时，dry-run 可通过 `strategy.public_rest_base` 指向实盘公共 REST（例如 `https://dapi.binance.com`）仅用于 **exchangeInfo / K 线**，这在不下单的前提下常用于 Testnet 合约覆盖不足时的监测（详见示例配置注释）。
 
-停止后必须确认：
+### 11.5 启动 Testnet 自动交易（signed 闭环）
 
-- 当前是否仍有持仓。
-- 是否仍有未完成订单。
-- 本地状态是否已记录停止原因。
+仅在已完成 dry-run、并理解会真实发出 **Testnet** 委托时使用。
 
-### 11.6 从 Testnet 到实盘
+**硬性条件（缺一不可）：**
 
-实盘必须默认关闭。只有完成以下检查后才允许显式开启：
+1. `conda activate roll-env`
+2. `config/settings.yaml` 中 `environment: testnet`（或未写该项，默认按 testnet 处理 signed 路径）
+3. `binance.rest_base` 为官方 Futures Testnet：`https://testnet.binancefuture.com`
+4. `strategy.testnet_signed_orders_enabled: true`（显式打开 Testnet 挂单开关）
+5. 已设置 `BINANCE_API_KEY` / `BINANCE_API_SECRET`（Testnet）
+6. **若配置了 `strategy.public_rest_base`**：自动交易时其值必须与 `binance.rest_base` **完全一致**，否则程序会拒绝启动；通常做法是：**删除或注释** `public_rest_base`，让读写行情与下单同属 Testnet。
+7. （强烈推荐）首次启动前先对账持仓与挂单：
 
-- 至少完成 2 周以上 dry-run 观察。
-- 至少完成多次 Testnet 自动开仓和平仓闭环。
-- 回测覆盖至少 3 个标的，并完成参数敏感性分析。
-- 确认 COIN-M 实盘合约、精度、最小数量、最大杠杆与 Testnet 差异。
-- 使用极小资金试运行。
-- 设置账户级最大亏损和交易所侧额外风控。
-- 准备手动平仓流程。
+```bash
+conda activate roll-env
+python -m main reconcile-state
+```
 
-## 12. 实盘前检查清单
+**单轮自动迭代：**
 
-- `BINANCE_ENV` 明确为目标环境，不能误用。
-- API Key 只授予必要权限，不开放提现权限。
-- 所有日志确认不会泄露 Secret。
-- 交易锁已经通过并发信号测试。
-- 异常恢复已经通过“进程中断后重启”测试。
-- 已验证不同 symbol 的精度和最小下单量处理。
-- 已验证止损、追踪止损、趋势反转退出。
-- 已验证最大回撤熔断。
-- 已验证 Binance API 限频处理。
-- 已准备人工停止和手动平仓步骤。
+```bash
+conda activate roll-env
+python -m main run-loop --once --no-dry-run
+```
+
+**持续自动循环：**
+
+```bash
+conda activate roll-env
+python -m main run-loop --no-dry-run
+```
+
+其他常用子命令（均需先 `conda activate roll-env`）：`coinm-signed-smoke`（Signed 冒烟）、`trend-offline`（仅公有 K 线）、`backtest`（回测）。详见 `README.md`。
+
+### 11.6 停止系统
+
+| 场景 | 做法 |
+| --- | --- |
+| 停止策略进程 | 在运行 `run-loop` 的终端按 **Ctrl+C**（发送中断）。当前实现不会在该信号下自动市价平掉全部持仓；若不希望留下裸露头寸，应先切换为不下单模式或事先手动平仓（见下）。 |
+| 阻止开新仓但保留已有持仓管理 | 异常时程序可能进入 **pause / halt**；详见运行日志与 `data/roll_state.json`。可使用 `python -m main run-loop --no-dry-run --clear-entry-pause` **仅清除 persisted 的「暂停开仓」标记**（不写交易所 API）；是否解除 halt 取决于对账与持仓状态。 |
+| 启动前希望刷新本地与交易所对齐的状态 | `python -m main reconcile-state`（**仅允许** Testnet host；见命令说明）。 |
+
+停止后务必执行下一节的「确认无持仓」。
+
+### 11.7 如何确认无持仓、无挂单
+
+1. **命令行对账（Testnet，推荐）**
+
+```bash
+conda activate roll-env
+python -m main reconcile-state
+```
+
+关注输出中的：
+
+- `nonzero_position_symbols=` → 应为空列表 `[]` 表示 **无持仓**
+- `symbols_with_open_orders=` → 应为 `[]` 表示 **无未完成委托**（或有挂单时需手工处理）
+
+若 `halt=true`，说明交易所快照触发安全停止（如多标的持仓、跨品种挂单等），需按打印的 `halt_reason` 人工处理后再重启策略。
+
+2. **交易所网页**：登录 Binance **Futures Testnet**，在 **COIN-M** 仓位与当前委托页面目视确认仓位为 0、无挂单。
+
+### 11.8 如何手动平仓 / 撤单
+
+本仓库**不提供**单独的「一键市价平仓」CLI；应急时请使用交易所侧能力：
+
+1. 登录 **Binance Futures Testnet** → **COIN-M** 合约。
+2. **撤销**该标的下所有未成交委托（Stop / Limit 等），避免与手动平仓单冲突。
+3. 在持仓面板对目标合约执行 **市价平仓**（或等价 Close Position）。
+4. 回到终端再次运行：
+
+```bash
+conda activate roll-env
+python -m main reconcile-state
+```
+
+确认 `nonzero_position_symbols=[]`。
+
+实盘环境下的手动平仓流程相同（使用实盘站点与账户），但 **当前版本的 `run-loop --no-dry-run` 不支持实盘 REST**，实盘操作仅限交易所界面或你另行编写的工具。
+
+### 11.9 从 Testnet 切换到 live 之前（必读）
+
+**当前代码状态**：`python -m main run-loop --no-dry-run` **仅在** `binance.rest_base` 为官方 Testnet 时可下单；**切换到实盘 REST 并不会自动启用实盘自动交易**。将来若加入实盘 signed 循环，也必须同时满足配置开关（见 11.3）与代码审查。
+
+在修改任何实盘参数之前，建议完成 **第 12 节检查清单**；以下为最小摘要：
+
+- Testnet 上 dry-run / signed 闭环均已跑通；理解日志与 `reconcile-state` 含义。
+- API Key **禁用提现**；密钥轮换与泄漏预案已准备好。
+- 明确 COIN-M **实盘**合约规则与 Testnet 差异（精度、最小名义价值、杠杆上限等）。
+- 已书面记下「Ctrl+C 停止后如何手动平仓」步骤（11.8）。
+- `strategy.live_trading_enabled` 在未得到明确风控批准前保持 **false**。
+
+## 12. 实盘（live）切换检查清单
+
+在进入实盘或接入任何真实资金自动化之前，逐项确认（未完成则 **不得** 视为可上线）：
+
+- [ ] **程序能力**：已确认当前仓库版本下，实盘 signed `run-loop` 是否已实施；若未实施，**仅能**使用交易所手动下单或使用经审计的其他工具。
+- [ ] **配置**：`strategy.live_trading_enabled` 仅在书面批准后为 **true**；默认保持 **false**。
+- [ ] **REST / 环境**：实盘 `binance.rest_base` 与密钥环境必须与 Testnet **彻底分离**，禁止混用 Key。
+- [ ] **API Key**：最小权限；无提现；IP 白名单（若可用）；独立於 Testnet 的 Key。
+- [ ] **密钥与日志**：日志与 issue 附件中**绝不**包含 Secret；`.env` 已加入 `.gitignore`。
+- [ ] **交易锁**：Testnet 已验证单标的锁、多标的 / 异常挂单时 **halt** 行为符合预期。
+- [ ] **恢复演练**：进程被杀、网络中断后重启，对账结果与持仓一致。
+- [ ] **精度与规则**：实盘 `exchangeInfo` 下最小下单量、步长、名义价值已实测。
+- [ ] **风控**：止损、追踪止损、回撤 / 日内熔断（若启用）在 Testnet 或仿真环境验收。
+- [ ] **限频与容错**：API 429 / 维护时段的行为可接受，有人工介入预案。
+- [ ] **应急**：已排练 **停止进程 → 网页撤单 → 市价平仓 → reconcile-state / 网页复查** 全流程。
 
 ## 13. 风险提示与非目标
 

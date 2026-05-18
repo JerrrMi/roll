@@ -367,7 +367,10 @@ def _cmd_run_loop(project_root: Path, argv: list[str]) -> int:
     ap.add_argument(
         "--no-dry-run",
         action="store_true",
-        help="COIN-M Futures **Testnet** 自动下单（REST 必须 testnet.binancefuture.com）；需 BINANCE_API_KEY / BINANCE_API_SECRET。",
+        help=(
+            "COIN-M Futures **Testnet** 自动下单（binance.rest_base 须为官方 Testnet）；"
+            "需 BINANCE_API_KEY / BINANCE_API_SECRET，且 settings.strategy.testnet_signed_orders_enabled=true。"
+        ),
     )
     ap.add_argument(
         "--clear-entry-pause",
@@ -421,7 +424,18 @@ def _cmd_run_loop(project_root: Path, argv: list[str]) -> int:
         from roll.position_manager import reconcile_coin_m_account
 
         if not is_binance_coin_m_testnet_url(rest_base_signed):
-            print(f"[run-loop] --no-dry-run 被拒绝：binance.rest_base={rest_base_signed!r} 非 Futures Testnet host。", file=sys.stderr)
+            print(
+                f"[run-loop] --no-dry-run 被拒绝：binance.rest_base={rest_base_signed!r} 非 Futures Testnet host。"
+                " 本仓库当前仅实现 Testnet signed 闭环；实盘 REST 即使设置 strategy.live_trading_enabled=true 也不会在此命令下下单。",
+                file=sys.stderr,
+            )
+            return 2
+        if not params.testnet_signed_orders_enabled:
+            print(
+                "[run-loop] Testnet 真实下单被拒绝：strategy.testnet_signed_orders_enabled 默认为 false。"
+                " 若确认在 Testnet 上自动挂单，请在该字段显式设为 true。",
+                file=sys.stderr,
+            )
             return 2
         if not api_key_ck or not api_secret_cs:
             print("[run-loop] --no-dry-run 需要环境变量 BINANCE_API_KEY / BINANCE_API_SECRET。", file=sys.stderr)
@@ -673,8 +687,9 @@ def main(argv: list[str] | None = None) -> int:
         settings.get("binance", {}).get("rest_base"),
     )
     log.info(
-        "自动交易前先执行（Testnet、`BINANCE_*` 已就绪时）"
-        " `python -m main reconcile-state` 以对账持仓与挂单并恢复全局单标的锁。"
+        "Testnet signed 主循环（须 strategy.testnet_signed_orders_enabled=true）："
+        "`python -m main reconcile-state` 对账后 "
+        "`python -m main run-loop --no-dry-run`（仅官方 Testnet REST）。",
     )
     log.info(
         "策略 dry-run 主循环：`python -m main run-loop --once`（默认公有 REST，不下单）。"

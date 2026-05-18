@@ -1,64 +1,100 @@
-# 滚仓交易系统（Python 骨架）
+# 滚仓交易系统（Binance COIN-M Futures）
 
-面向 **Binance COIN-M Futures** 的滚仓策略自动化框架。当前仓库为**骨架阶段**：仅包含模块划分、配置样例、入口脚本与基础测试，**不包含真实交易、行情拉取或签名下单逻辑**。
+Python 单体策略框架：**监测多候选标的，任一时刻最多交易一个标的**。支持 dry-run、`run-loop` Testnet signed 闭环（显式开启）、回测与离线趋势验收。
 
-## 环境约束
-
-所有终端命令执行前请先激活 Conda 环境：
+**每一条终端命令在执行前都必须先激活 Conda 环境：**
 
 ```bash
 conda activate roll-env
 ```
 
-## 默认网络：Testnet
-
-- 默认使用 Binance Futures **Testnet** REST：`https://testnet.binancefuture.com`，COIN-M 路径前缀 `/dapi/v1`。
-- 切换到实盘前务必在配置中显式修改，并理解资金与 API 权限风险。
-
-## 安装（开发）
-
-在项目根目录执行：
+## 环境与安装
 
 ```bash
 conda activate roll-env
 pip install -e ".[dev]"
 ```
 
-## 配置
-
-复制示例配置并按需修改：
-
-```bash
-copy config\settings.example.yaml config\settings.yaml
-```
-
-（Linux/macOS 使用 `cp`。）
-
-将 API Key / Secret 放在环境变量中（**不要把 Secret 写入仓库**）。可参考 `config/env.example`。
-
-## 运行入口（骨架占位）
+## 配置文件
 
 ```bash
 conda activate roll-env
-python -m main
+copy config\settings.example.yaml config\settings.yaml
 ```
 
-当前 `main` 仅加载示例配置并打印说明，不连接交易所。
+（Linux/macOS：`cp config/settings.example.yaml config/settings.yaml`。）
 
-## 运行测试
+编辑 `config/settings.yaml`：`candidates`、`binance.rest_base`、`strategy` 等。勿将 API Secret 写入 YAML 或提交 Git。
+
+## Binance Testnet API Key（环境变量）
+
+在 Binance **Futures Testnet** 创建 COIN-M 可用的 Key（**不要**开启提现）。在当前终端会话设置：
+
+**PowerShell：**
+
+```powershell
+conda activate roll-env
+$env:BINANCE_API_KEY = "你的_testnet_key"
+$env:BINANCE_API_SECRET = "你的_testnet_secret"
+```
+
+**Bash：**
+
+```bash
+conda activate roll-env
+export BINANCE_API_KEY="你的_testnet_key"
+export BINANCE_API_SECRET="你的_testnet_secret"
+```
+
+详见 `config/env.example`。
+
+## 安全开关（默认不下单）
+
+| 行为 | 说明 |
+| --- | --- |
+| **dry-run（默认）** | `python -m main run-loop`：只拉行情、打印决策，**不发 signed 单**。 |
+| **Testnet 真实挂单** | 需 **CLI** `--no-dry-run` **且** `strategy.testnet_signed_orders_enabled: true` **且** `binance.rest_base` 为官方 Testnet **且** 已设置 `BINANCE_*`。 |
+| **实盘自动交易** | `strategy.live_trading_enabled` **默认为 false**；当前 **`run-loop --no-dry-run` 仅允许 Testnet**，不接实盘 REST。 |
+
+自动交易若配置了 `strategy.public_rest_base`，则其必须与 `binance.rest_base` 相同；dry-run 可用实盘公共 REST 仅读行情时参见示例 YAML 注释。
+
+## 常用命令（均需先 `conda activate roll-env`）
+
+**Dry-run（推荐先做）：**
+
+```bash
+conda activate roll-env
+python -m main run-loop --once
+```
+
+**Testnet signed 主循环（先对账）：**
+
+```bash
+conda activate roll-env
+python -m main reconcile-state
+python -m main run-loop --no-dry-run
+```
+
+（须在 `settings.yaml` 将 `testnet_signed_orders_enabled` 设为 `true`，且 Testnet 自动交易时不要使用与 Testnet 不一致的 `public_rest_base`。）
+
+**停止与确认无持仓：** 在运行循环的终端 **Ctrl+C**；然后：
+
+```bash
+conda activate roll-env
+python -m main reconcile-state
+```
+
+检查输出中 `nonzero_position_symbols=[]`。手动平仓请在 Binance Futures Testnet **COIN-M** 网页撤单并市价平仓。
+
+**其他：** `python -m main trend-offline --symbol DOGEUSD_PERP`、`python -m main backtest --days 180`、`python -m main coinm-signed-smoke --symbol DOGEUSD_PERP`。
+
+## 文档
+
+- 设计与完整操作说明（含实盘切换清单、手动平仓步骤）：`docs/滚仓系统实现的plan文档.md` §11–§12。
+
+## 测试
 
 ```bash
 conda activate roll-env
 pytest
 ```
-
-验收：测试应全部通过，用于确认包结构、导入路径与基础占位逻辑正常。
-
-## 安全边界
-
-- _skeleton_ 阶段不发起真实 HTTP 下单请求；后续阶段在 Testnet 上验收。
-- 日志与配置中**不得**写入 API Secret；参见 `docs/滚仓系统实现的plan文档.md`。
-
-## 文档
-
-详细设计与分阶段验收见 `docs/滚仓系统实现的plan文档.md`。

@@ -29,8 +29,13 @@ timeframes:
   - "1h"
   - "4h"
 
-# 策略主循环（python -m main run-loop）：默认 dry-run；--no-dry-run 且 Testnet+密钥 时为自动交易闭环
+# 策略主循环（python -m main run-loop）：默认 dry-run（不下单）。
+# Testnet 自动下单须同时：CLI `--no-dry-run` + 下方 testnet_signed_orders_enabled: true + 环境变量 BINANCE_*。
 strategy:
+  # 安全开关：默认 false；仅在为 Testnet 验收真实挂单时改为 true
+  testnet_signed_orders_enabled: false
+  # 实盘 signed 自动交易：默认 false；当前程序未接入实盘 REST 下单，切勿仅凭此项误以为已开实盘
+  live_trading_enabled: false
   loop_interval_sec: 120
   klines_limit: 600
   min_monitor_symbols: 3

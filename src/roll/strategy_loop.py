@@ -27,8 +27,10 @@ class StrategyLoopParams:
     """run-loop 使用的可调参数（可由 YAML `strategy` 覆盖）。
 
     public_rest_base：若设置，run-loop 仅用该公有 REST host 拉 exchangeInfo/K 线/ticker；
-    Live 模式下必须与 binance.rest_base 一致或为 None。
+    Testnet signed 模式下必须与 binance.rest_base 一致或删除该字段。
     trail_stop_fraction：>0 时启用基于极值的追踪 STOP（仍可被初始止损底价约束）。
+    testnet_signed_orders_enabled：仅 true 时允许 `run-loop --no-dry-run` 在 Testnet 发 signed 单。
+    live_trading_enabled：预留实盘开关，默认 false；当前代码不会在实盘 REST 上执行 signed run-loop。
     """
 
     loop_interval_sec: float = 60.0
@@ -41,6 +43,10 @@ class StrategyLoopParams:
     min_monitor_symbols: int = 3
     public_rest_base: str | None = None
     trail_stop_fraction: float | None = None
+    # 安全开关：`python -m main run-loop --no-dry-run`（Testnet signed）需显式 true
+    testnet_signed_orders_enabled: bool = False
+    # 实盘 signed 下单（当前代码未接入；保留开关以便默认永不误开实盘）
+    live_trading_enabled: bool = False
 
 
 def parse_strategy_loop_params(settings: Mapping[str, Any]) -> StrategyLoopParams:
@@ -78,6 +84,12 @@ def parse_strategy_loop_params(settings: Mapping[str, Any]) -> StrategyLoopParam
         tf = float(tr)
         trail_frac = tf if tf > 0 else None
 
+    tso = raw.get("testnet_signed_orders_enabled")
+    testnet_signed = bool(tso) if isinstance(tso, bool) else StrategyLoopParams.testnet_signed_orders_enabled
+
+    lte = raw.get("live_trading_enabled")
+    live_en = bool(lte) if isinstance(lte, bool) else StrategyLoopParams.live_trading_enabled
+
     return StrategyLoopParams(
         loop_interval_sec=max(interval, 1.0),
         klines_limit=max(klines_lim, 50),
@@ -89,6 +101,8 @@ def parse_strategy_loop_params(settings: Mapping[str, Any]) -> StrategyLoopParam
         min_monitor_symbols=max(min_syms, 3),
         public_rest_base=pub_rest,
         trail_stop_fraction=trail_frac,
+        testnet_signed_orders_enabled=testnet_signed,
+        live_trading_enabled=live_en,
     )
 
 

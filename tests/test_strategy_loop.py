@@ -43,6 +43,16 @@ def test_parse_strategy_loop_defaults() -> None:
     p = parse_strategy_loop_params({})
     assert p.min_monitor_symbols == 3
     assert p.loop_interval_sec == 60.0
+    assert p.testnet_signed_orders_enabled is False
+    assert p.live_trading_enabled is False
+
+
+def test_parse_strategy_loop_safety_flags() -> None:
+    p = parse_strategy_loop_params(
+        {"strategy": {"testnet_signed_orders_enabled": True, "live_trading_enabled": True}},
+    )
+    assert p.testnet_signed_orders_enabled is True
+    assert p.live_trading_enabled is True
 
 
 def test_parse_strategy_loop_from_yaml_blob() -> None:

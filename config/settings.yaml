@@ -29,8 +29,10 @@ timeframes:
   - "1h"
   - "4h"
 
-# 策略主循环（`python -m main run-loop`）：首期仅 dry-run
+# 策略主循环（`python -m main run-loop`）：默认 dry-run；Testnet 真实下单见 testnet_signed_orders_enabled
 strategy:
+  testnet_signed_orders_enabled: false
+  live_trading_enabled: false
   loop_interval_sec: 120
   klines_limit: 600
   min_monitor_symbols: 3
