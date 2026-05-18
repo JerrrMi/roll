@@ -80,3 +80,15 @@ def test_halt_blocks_transitions() -> None:
     mgr.set_halt_for_manual_review("simulate multi-book")
     with pytest.raises(TransitionError):
         mgr.begin_enter("DOG")
+
+
+def test_pause_blocks_begin_enter_from_idle_but_allows_managed_symbol() -> None:
+    mgr = PositionManager()
+    mgr.pause_opening_entries("simulate api backoff")
+    assert not mgr.allow_scan_candidates()
+    with pytest.raises(TransitionError):
+        mgr.begin_enter("DOG")
+
+    held = PositionManager(initial_state=TradeLockState.IN_POSITION, active_symbol="DOG")
+    held.pause_opening_entries("simulate api backoff")
+    assert held.allow_manage_active_only("DOG")

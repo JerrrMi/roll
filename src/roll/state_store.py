@@ -18,6 +18,8 @@ class RuntimeState:
     active_symbol: str | None = None
     halt_automatic_trading: bool = False
     halt_reason: str | None = None
+    pause_new_positions: bool = False
+    pause_new_positions_reason: str | None = None
     cooldown_until_unix_ms: int | None = None
     last_signal: dict[str, Any] = field(default_factory=dict)
 
@@ -75,6 +77,9 @@ def _runtime_from_mapping(m: Mapping[str, Any]) -> RuntimeState:
     halted = bool(m.get("halt_automatic_trading", False))
     reason_raw = m.get("halt_reason")
     reason = str(reason_raw) if isinstance(reason_raw, str) else None
+    pn = bool(m.get("pause_new_positions", False))
+    pnr_raw = m.get("pause_new_positions_reason")
+    pnr = str(pnr_raw) if isinstance(pnr_raw, str) else None
     cdu = m.get("cooldown_until_unix_ms")
     cd: int | None = int(cdu) if isinstance(cdu, int) else None
 
@@ -86,6 +91,8 @@ def _runtime_from_mapping(m: Mapping[str, Any]) -> RuntimeState:
         active_symbol=sym if sym else None,
         halt_automatic_trading=halted,
         halt_reason=reason,
+        pause_new_positions=pn,
+        pause_new_positions_reason=pnr,
         cooldown_until_unix_ms=cd,
         last_signal=dict(last_sig),
     )

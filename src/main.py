@@ -178,7 +178,7 @@ def _apply_logging_from_settings(settings: dict) -> None:
 
 
 def _cmd_run_loop(project_root: Path, argv: list[str]) -> int:
-    """策略主循环：默认 dry-run，仅公有 REST + 打印计划动作，不下单。"""
+    """策略主循环：默认 dry-run；`--no-dry-run` 且 binance.rest_base 为 Futures Testnet 时 Signed 自动交易闭环。"""
 
     from roll.binance_client import BinanceClientConfig, BinanceCoinMClient, InsufficientMonitorableSymbolsError
     from roll.logger import get_logger
@@ -187,12 +187,13 @@ def _cmd_run_loop(project_root: Path, argv: list[str]) -> int:
         run_strategy_forever,
         run_strategy_iteration,
     )
+    from roll.state_store import RuntimeState
 
     ap = argparse.ArgumentParser(
         prog="python -m main run-loop",
         description=(
-            "多候选扫描 → 趋势评分 → 风控择优 → 单标的 dry-run 输出。"
-            "不进行签名请求与下单。"
+            "多候选扫描 → 趋势评分 → 风控择优 → 默认 dry-run；"
+            "加 --no-dry-run（仅官方 Futures Testnet + BINANCE_*）则 Signed 闭环自动交易。"
         ),
     )
     ap.add_argument(
@@ -215,21 +216,20 @@ def _cmd_run_loop(project_root: Path, argv: list[str]) -> int:
     ap.add_argument(
         "--no-dry-run",
         action="store_true",
-        help="首期不支持：若指定则立即退出（防止误触发真实交易）。",
+        help="COIN-M Futures **Testnet** 自动下单（REST 必须 testnet.binancefuture.com）；需 BINANCE_API_KEY / BINANCE_API_SECRET。",
     )
-    args_loop = ap.parse_args(argv)
-
-    if args_loop.no_dry_run:
-        print(
-            "[run-loop] 首期仅实现 dry-run；去掉 --no-dry-run 或使用默认 dry-run。",
-            file=sys.stderr,
-        )
-        return 2
-
-    cfg_path = _resolve_cfg_path(Path(args_loop.config), project_root)
-    settings = _load_settings_yaml(cfg_path)
+    ap.add_argument(
+        "--clear-entry-pause",
+        action="store_true",
+        help="下一轮迭代开始前解除 persisted 开仓暂停标记（不写 API；仅清除本地 pause_new_positions）。",
+    )    settings = _load_settings_yaml(cfg_path)
     if not settings:
         print(f"[run-loop] 配置不存在或为空: {cfg_path}", file=sys.stderr)
+        return 2
+
+    env_raw = str(settings.get("environment", "testnet") or "").strip().lower()
+    if env_raw not in {"", "testnet"} and args_loop.no_dry_run:
+        print("[run-loop] --no-dry-run 仅在 environment=testnet（或未设置）时使用。", file=sys.stderr)
         return 2
 
     _apply_logging_from_settings(settings)
@@ -242,25 +242,115 @@ def _cmd_run_loop(project_root: Path, argv: list[str]) -> int:
         params = replace(params, loop_interval_sec=max(float(args_loop.interval_sec), 1.0))
 
     b = settings.get("binance", {}) if isinstance(settings.get("binance"), dict) else {}
-    rest_base = str(b.get("rest_base", "https://testnet.binancefuture.com"))
-    if params.public_rest_base:
-        rest_base = params.public_rest_base
-        log.info("strategy.public_rest_base overrides market REST host (read-only): %s", rest_base)
+    rest_base_signed = str(b.get("rest_base", "https://testnet.binancefuture.com"))
     coin_m_prefix = str(b.get("coin_m_prefix", "/dapi/v1"))
     recv_window_ms = int(b.get("recv_window_ms", 5000))
 
+    rest_public = rest_base_signed
+    if params.public_rest_base:
+        rest_public = str(params.public_rest_base).strip()
+        log.info("strategy.public_rest_base overrides market REST (read/K 线/ticker): %s", rest_public)
+
+    api_key_env = os.environ.get("BINANCE_API_KEY")
+    api_secret_env = os.environ.get("BINANCE_API_SECRET")
+    api_key_ck = api_key_env.strip() if isinstance(api_key_env, str) else ""
+    api_secret_cs = api_secret_env.strip() if isinstance(api_secret_env, str) else ""
+
+    dry_run = not args_loop.no_dry_run
+    signed_client_live = None
+    pm_for_live = None
+    store_live = None
+
+    if args_loop.no_dry_run:
+        from roll.binance_client import BinanceCoinMSignedClient, is_binance_coin_m_testnet_url
+        from roll.position_manager import PositionManager
+        from roll.position_manager import reconcile_coin_m_account
+
+        if not is_binance_coin_m_testnet_url(rest_base_signed):
+            print(f"[run-loop] --no-dry-run 被拒绝：binance.rest_base={rest_base_signed!r} 非 Futures Testnet host。", file=sys.stderr)
+            return 2
+        if not api_key_ck or not api_secret_cs:
+            print("[run-loop] --no-dry-run 需要环境变量 BINANCE_API_KEY / BINANCE_API_SECRET。", file=sys.stderr)
+            return 2
+        if params.public_rest_base:
+            pu = rest_public.rstrip("/").lower()
+            su = rest_base_signed.rstrip("/").lower()
+            if pu != su:
+                print("[run-loop] 自动交易中 strategy.public_rest_base 必须与 binance.rest_base 相同或删除该字段。", file=sys.stderr)
+                return 2
+
+        cfg_s = BinanceClientConfig(
+            rest_base=rest_base_signed,
+            coin_m_prefix=coin_m_prefix,
+            recv_window_ms=recv_window_ms,
+            api_key=api_key_ck,
+            api_secret=api_secret_cs,
+        )
+        signed_client_live = BinanceCoinMSignedClient(cfg_s)
+
+        pm_for_live = PositionManager()
+        store_live = _state_store_from_settings(settings)
+        persisted_early = store_live.load()
+
+        if args_loop.clear_entry_pause:
+            persisted_early.pause_new_positions = False
+            persisted_early.pause_new_positions_reason = None
+            store_live.save(persisted_early)
+
+        elif persisted_early.pause_new_positions:
+            rs = persisted_early.pause_new_positions_reason or "persisted"
+            pm_for_live.pause_opening_entries(str(rs))
+
+        signed_client_live.sync_server_time()
+        reconcile_outcome = reconcile_coin_m_account(signed_client_live.position_risk(), signed_client_live.open_orders())
+        pm_for_live.restore_from_exchange(reconcile_outcome)
+        snap_pm = pm_for_live.snapshot_dict()
+        stored_after_reconcile = store_live.load()
+        store_live.save(
+            RuntimeState(
+                trade_lock_state=reconcile_outcome.lock_state.value,
+                active_symbol=reconcile_outcome.active_symbol,
+                halt_automatic_trading=reconcile_outcome.halt_automatic_trading,
+                halt_reason=reconcile_outcome.halt_reason,
+                pause_new_positions=bool(snap_pm.get("pause_new_positions")),
+                pause_new_positions_reason=(
+                    str(snap_pm["pause_new_reason"]) if isinstance(snap_pm.get("pause_new_reason"), str) else None
+                ),
+                cooldown_until_unix_ms=stored_after_reconcile.cooldown_until_unix_ms,
+                last_signal=stored_after_reconcile.last_signal if isinstance(stored_after_reconcile.last_signal, dict) else {},
+            )
+        )
+
     client = BinanceCoinMClient(
         BinanceClientConfig(
-            rest_base=rest_base,
+            rest_base=rest_public,
             coin_m_prefix=coin_m_prefix,
             recv_window_ms=recv_window_ms,
         ),
     )
 
-    log.info("run-loop start dry_run=True rest_base=%s once=%s", rest_base, args_loop.once)
+    log.info(
+        "run-loop start dry_run=%s signed_rest_base=%s public_rest_base=%s once=%s",
+        dry_run,
+        rest_base_signed,
+        rest_public,
+        args_loop.once,
+    )
+
+    exec_client_for_loop = client if dry_run else signed_client_live
+
     if args_loop.once:
         try:
-            run_strategy_iteration(settings=settings, client=client, params=params, dry_run=True)
+            run_strategy_iteration(
+                settings=settings,
+                client=exec_client_for_loop,
+                params=params,
+                dry_run=dry_run,
+                signed_client=signed_client_live,
+                position_manager=pm_for_live,
+                state_store=store_live,
+                clear_entry_pause=bool(args_loop.clear_entry_pause and args_loop.no_dry_run),
+            )
         except InsufficientMonitorableSymbolsError:
             log.warning(
                 "run-loop stopped: fewer than min_monitor_symbols matched on this venue "
@@ -269,7 +359,16 @@ def _cmd_run_loop(project_root: Path, argv: list[str]) -> int:
             return 3
         return 0
 
-    run_strategy_forever(settings=settings, client=client, dry_run=True, params=params)
+    run_strategy_forever(
+        settings=settings,
+        client=exec_client_for_loop,
+        dry_run=dry_run,
+        params=params,
+        signed_client=signed_client_live,
+        position_manager=pm_for_live,
+        state_store=store_live,
+        clear_entry_pause_once=bool(args_loop.clear_entry_pause and args_loop.no_dry_run),
+    )
     return 0
 
 
@@ -362,6 +461,8 @@ def _cmd_reconcile_state(project_root: Path, argv: list[str]) -> int:
         active_symbol=outcome.active_symbol,
         halt_automatic_trading=outcome.halt_automatic_trading,
         halt_reason=outcome.halt_reason,
+        pause_new_positions=False,
+        pause_new_positions_reason=None,
     )
     store.save(persisted)
     if getattr(store, "path", None) is not None:

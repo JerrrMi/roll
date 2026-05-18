@@ -263,7 +263,15 @@ class PositionManager:
     exchange 快照通过 `restore_from_exchange` 强制灌入（绕过普通迁移校验）。
     """
 
-    __slots__ = ("_halt_automatic_trading", "_halt_reason", "_rl", "_state", "_sym")
+    __slots__ = (
+        "_halt_automatic_trading",
+        "_halt_reason",
+        "_pause_new_positions",
+        "_pause_new_reason",
+        "_rl",
+        "_state",
+        "_sym",
+    )
 
     def __init__(
         self,
@@ -272,12 +280,16 @@ class PositionManager:
         active_symbol: str | None = None,
         halted: bool = False,
         halt_reason: str | None = None,
+        pause_new_positions: bool = False,
+        pause_new_reason: str | None = None,
     ) -> None:
         self._rl = threading.RLock()
         self._state = TradeLockState.IDLE if initial_state is None else initial_state
         self._sym: str | None = active_symbol
         self._halt_automatic_trading = halted
         self._halt_reason = halt_reason
+        self._pause_new_positions = pause_new_positions
+        self._pause_new_reason = pause_new_reason
 
     @property
     def lock_state(self) -> TradeLockState:
@@ -298,6 +310,27 @@ class PositionManager:
     def halt_reason(self) -> str | None:
         with self._rl:
             return self._halt_reason
+
+    @property
+    def pause_new_positions(self) -> bool:
+        with self._rl:
+            return self._pause_new_positions
+
+    @property
+    def pause_new_reason(self) -> str | None:
+        with self._rl:
+            return self._pause_new_reason
+
+    def pause_opening_entries(self, reason: str) -> None:
+        """异常路径：阻塞 IDLE→新开仓探测；已持仓仍可管理／监控。"""
+        with self._rl:
+            self._pause_new_positions = True
+            self._pause_new_reason = reason
+
+    def resume_opening_entries(self) -> None:
+        with self._rl:
+            self._pause_new_positions = False
+            self._pause_new_reason = None
 
     def set_halt_for_manual_review(self, reason: str) -> None:
         with self._rl:
@@ -335,6 +368,9 @@ class PositionManager:
     def begin_enter(self, symbol: str) -> None:
         """IDLE → ENTERING(symbol)"""
         sym = symbol.strip().upper()
+        with self._rl:
+            if self._pause_new_positions and self._state is TradeLockState.IDLE:
+                raise TransitionError(f"开仓暂停生效：{self._pause_new_reason or ''}")
         self._transition(TradeLockState.ENTERING, sym, validator=self._idle_or_same_entering(sym))
 
     def rollback_enter_to_idle(self) -> None:
@@ -381,6 +417,7 @@ class PositionManager:
         with self._rl:
             return (
                 not self._halt_automatic_trading
+                and not self._pause_new_positions
                 and self._state is TradeLockState.IDLE
                 and self._sym is None
             )
@@ -497,6 +534,8 @@ class PositionManager:
                 "active_symbol": self._sym,
                 "halt_automatic_trading": self._halt_automatic_trading,
                 "halt_reason": self._halt_reason,
+                "pause_new_positions": self._pause_new_positions,
+                "pause_new_reason": self._pause_new_reason,
             }
 
 
@@ -519,6 +558,8 @@ def position_manager_from_saved_view(
     active_symbol: str | None,
     halt_automatic_trading: bool,
     halt_reason: str | None,
+    pause_new_positions: bool = False,
+    pause_new_reason: str | None = None,
 ) -> PositionManager:
     """从磁盘 `RuntimeState` 字段恢复会话锁（仍以启动对账结果为最高优先级）。"""
     try:
@@ -532,6 +573,8 @@ def position_manager_from_saved_view(
         active_symbol=sym_out,
         halted=halt_automatic_trading,
         halt_reason=halt_reason,
+        pause_new_positions=pause_new_positions,
+        pause_new_reason=str(pause_new_reason) if isinstance(pause_new_reason, str) else None,
     )
 
 

@@ -14,7 +14,7 @@ import hmac
 import json
 import time
 from dataclasses import dataclass, field
-from decimal import ROUND_DOWN, Decimal, InvalidOperation
+from decimal import ROUND_DOWN, ROUND_UP, Decimal, InvalidOperation
 from typing import Any, Mapping, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qsl, urlencode, urlunparse, urlparse
@@ -196,6 +196,29 @@ def format_floor_to_step_decimal_str(raw_decimal_str: str, step_str: str) -> str
         raise BinanceSignerError(f"无效的 step_size: {step_str!r}")
     n_step = (q / step).to_integral_value(rounding=ROUND_DOWN) * step
     s = format(n_step, "f")
+    if "." in s:
+        s = s.rstrip("0").rstrip(".")
+    return s or "0"
+
+
+def format_price_to_tick_decimal_str(
+    raw_price: str | float,
+    tick_str: str,
+    *,
+    rounding: str = "down",
+) -> str:
+    """将价格对齐到 PRICE_FILTER.tickSize；止损价多头通常向下floor、空头向上ceil。"""
+    try:
+        q = Decimal(str(raw_price))
+        tick = Decimal(str(tick_str))
+    except InvalidOperation as e:
+        raise BinanceSignerError(f"无效的价格 / tick：{raw_price!r} / {tick_str!r}") from e
+    if tick <= 0:
+        raise BinanceSignerError(f"无效的 tick_str: {tick_str!r}")
+    mode = rounding.strip().lower()
+    rnd = ROUND_DOWN if mode in {"down", "floor"} else ROUND_UP
+    n = (q / tick).to_integral_value(rounding=rnd) * tick
+    s = format(n, "f")
     if "." in s:
         s = s.rstrip("0").rstrip(".")
     return s or "0"
@@ -669,6 +692,31 @@ class BinanceCoinMSignedClient(BinanceCoinMClient):
         if new_order_resp_type:
             p["newOrderRespType"] = new_order_resp_type
         return self.new_order_raw(p)
+
+    def new_stop_market_close_position(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        stop_price: str,
+        position_side: str | None = None,
+        working_type: str = "MARK_PRICE",
+        client_order_id: str | None = None,
+    ) -> dict[str, Any]:
+        """STOP_MARKET + closePosition：全平价保护止损（不能与 quantity / reduceOnly 同发）。"""
+        q: dict[str, Any] = {
+            "symbol": symbol,
+            "side": side.upper(),
+            "type": "STOP_MARKET",
+            "stopPrice": stop_price,
+            "closePosition": True,
+            "workingType": working_type,
+        }
+        if position_side:
+            q["positionSide"] = position_side.upper()
+        if client_order_id:
+            q["newClientOrderId"] = client_order_id
+        return self.new_order_raw(q)
 
     def get_order(
         self,

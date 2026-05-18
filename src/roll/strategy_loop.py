@@ -8,6 +8,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from roll.binance_client import (
     BinanceCoinMClient,
+    BinanceCoinMSignedClient,
     CoinMFuturesSymbol,
     InsufficientMonitorableSymbolsError,
     select_monitorable_coin_m_symbols,
@@ -25,8 +26,9 @@ LoggerFn = Callable[[str], None]
 class StrategyLoopParams:
     """run-loop 使用的可调参数（可由 YAML `strategy` 覆盖）。
 
-    public_rest_base：若设置，run-loop 仅用该公有 REST host 拉 exchangeInfo/K 线/ticker（不下单）；
-    省略则使用 binance.rest_base。
+    public_rest_base：若设置，run-loop 仅用该公有 REST host 拉 exchangeInfo/K 线/ticker；
+    Live 模式下必须与 binance.rest_base 一致或为 None。
+    trail_stop_fraction：>0 时启用基于极值的追踪 STOP（仍可被初始止损底价约束）。
     """
 
     loop_interval_sec: float = 60.0
@@ -38,6 +40,7 @@ class StrategyLoopParams:
     kelly_b: float = 1.2
     min_monitor_symbols: int = 3
     public_rest_base: str | None = None
+    trail_stop_fraction: float | None = None
 
 
 def parse_strategy_loop_params(settings: Mapping[str, Any]) -> StrategyLoopParams:
@@ -69,6 +72,12 @@ def parse_strategy_loop_params(settings: Mapping[str, Any]) -> StrategyLoopParam
         if s:
             pub_rest = s
 
+    tr = raw.get("trail_stop_fraction")
+    trail_frac: float | None = None
+    if isinstance(tr, (int, float)) and not isinstance(tr, bool):
+        tf = float(tr)
+        trail_frac = tf if tf > 0 else None
+
     return StrategyLoopParams(
         loop_interval_sec=max(interval, 1.0),
         klines_limit=max(klines_lim, 50),
@@ -79,6 +88,7 @@ def parse_strategy_loop_params(settings: Mapping[str, Any]) -> StrategyLoopParam
         kelly_b=max(_f("kelly_b", StrategyLoopParams.kelly_b), 1e-6),
         min_monitor_symbols=max(min_syms, 3),
         public_rest_base=pub_rest,
+        trail_stop_fraction=trail_frac,
     )
 
 
@@ -223,16 +233,40 @@ def run_strategy_iteration(
     dry_run: bool = True,
     intervals: tuple[str, ...] | None = None,
     trend_params: TrendModelParams | None = None,
+    signed_client: BinanceCoinMSignedClient | None = None,
+    position_manager=None,
+    state_store=None,
+    clear_entry_pause: bool = False,
 ) -> None:
-    """单次扫描：≥min_monitor_symbols 个候选 → 趋势评分 → 风控择优 → dry-run 只打印不下单。"""
-    if not dry_run:
-        raise NotImplementedError("run_strategy_iteration：首期仅支持 dry_run=True（禁止真实下单）")
-
+    """单次扫描：候选趋势 → dry-run 打印或 Testnet Signed 自动交易闭环。"""
     log = get_logger("strategy_loop")
     out: LoggerFn = emit or log.info
-
     p = params or parse_strategy_loop_params(settings)
     iv = intervals if intervals is not None else intervals_from_settings(settings)
+
+    if not dry_run:
+        from roll.coinm_auto_trade import run_live_strategy_iteration
+        from roll.position_manager import PositionManager
+        from roll.state_store import StateStore as _RtStore
+
+        if signed_client is None or not isinstance(signed_client, BinanceCoinMSignedClient):
+            raise ValueError("live run_strategy_iteration 需要 BinanceCoinMSignedClient signed_client")
+        if position_manager is None or not isinstance(position_manager, PositionManager):
+            raise ValueError("live run_strategy_iteration 需要 PositionManager(position_manager)")
+        if state_store is None or not isinstance(state_store, _RtStore):
+            raise ValueError("live run_strategy_iteration 需要 StateStore(state_store)")
+        run_live_strategy_iteration(
+            settings=settings,
+            signed_client=signed_client,
+            position_manager=position_manager,
+            state_store=state_store,
+            params=p,
+            emit=out,
+            intervals=iv,
+            trend_params=trend_params,
+            clear_entry_pause=clear_entry_pause,
+        )
+        return
 
     limits = RiskLimits()
 
@@ -331,9 +365,18 @@ def run_strategy_forever(
     client: BinanceCoinMClient,
     dry_run: bool = True,
     params: StrategyLoopParams | None = None,
+    signed_client: BinanceCoinMSignedClient | None = None,
+    position_manager=None,
+    state_store=None,
+    clear_entry_pause_once: bool = False,
 ) -> None:
+    from roll.position_manager import PositionManager
+
     p = params or parse_strategy_loop_params(settings)
     log = get_logger("strategy_loop")
+    pm_eff = position_manager if position_manager is not None else PositionManager()
+    first_clear_done = False
+
     log.info(
         "strategy loop starting dry_run=%s interval_sec=%.1f min_symbols=%d",
         dry_run,
@@ -341,8 +384,21 @@ def run_strategy_forever(
         p.min_monitor_symbols,
     )
     while True:
+        ce = False
+        if clear_entry_pause_once and not first_clear_done:
+            ce = True
+            first_clear_done = True
         try:
-            run_strategy_iteration(settings=settings, client=client, params=p, dry_run=dry_run)
+            run_strategy_iteration(
+                settings=settings,
+                client=client,
+                params=p,
+                dry_run=dry_run,
+                signed_client=signed_client,
+                position_manager=pm_eff,
+                state_store=state_store,
+                clear_entry_pause=ce,
+            )
         except InsufficientMonitorableSymbolsError:
             log.warning("iteration aborted for insufficient symbols; retry after interval")
         except Exception:

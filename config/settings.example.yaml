@@ -29,7 +29,7 @@ timeframes:
   - "1h"
   - "4h"
 
-# 策略主循环（`python -m main run-loop`）：首期仅 dry-run，公有行情 + 打印计划参数
+# 策略主循环（python -m main run-loop）：默认 dry-run；--no-dry-run 且 Testnet+密钥 时为自动交易闭环
 strategy:
   loop_interval_sec: 120
   klines_limit: 600
@@ -39,7 +39,9 @@ strategy:
   stop_adverse_fraction: 0.05
   kelly_p: 0.55
   kelly_b: 1.2
-  # Testnet 候选 PERP 常少于 3；dry-run 仅拉公有行情时可改用实盘 host（仍不下单）
+  # 可选：追踪 STOP（仍需满足初始底价 stop_adverse_fraction）；自动交易时需与 binance.rest_base 同源行情
+  # trail_stop_fraction: 0.02
+  # Live 模式下 public_rest_base 必须与 binance.rest_base 完全一致；dry-run-only 可看实盘公共行情：
   # public_rest_base: "https://dapi.binance.com"
 
 # 趋势评分模型默认值见代码 `TrendModelParams`；离线验收：

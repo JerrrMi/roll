@@ -68,3 +68,10 @@ def test_parse_strategy_loop_from_yaml_blob() -> None:
     assert p.stop_adverse_fraction == 0.03
     assert p.kelly_p == 0.6
     assert p.kelly_b == 2.0
+
+
+def test_parse_strategy_loop_trail_fraction() -> None:
+    p = parse_strategy_loop_params({"strategy": {"trail_stop_fraction": 0.02}})
+    assert p.trail_stop_fraction == 0.02
+    q = parse_strategy_loop_params({"strategy": {"trail_stop_fraction": -1}})
+    assert q.trail_stop_fraction is None
