@@ -214,7 +214,6 @@ def persist_autotrade_runtime(
     *,
     pm: PositionManager,
     live_leaf: Mapping[str, Any],
-    *,
     clear_live: bool = False,
 ) -> None:
     snap = pm.snapshot_dict()

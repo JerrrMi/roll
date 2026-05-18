@@ -44,6 +44,15 @@ def test_kelly_variants_scale() -> None:
     ) == pytest.approx(raw * 0.25)
 
 
+def test_kelly_extra_multiplier_scales_effective_fraction() -> None:
+    p, b = 0.6, 1.5
+    raw = kelly_fraction(p, b)
+    lim = RiskLimits(max_position_fraction=1.0, kelly_variant=KellyVariant.FULL, kelly_extra_multiplier=0.5)
+    assert effective_position_fraction(
+        p, b, lim.kelly_variant, lim.max_position_fraction, kelly_extra_multiplier=lim.kelly_extra_multiplier
+    ) == pytest.approx(raw * 0.5)
+
+
 def test_kelly_non_positive_parameters() -> None:
     assert kelly_fraction(0.5, -1.0) == 0.0
     assert kelly_fraction(0.0, 2.0) == 0.0

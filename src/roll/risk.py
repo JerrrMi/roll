@@ -41,14 +41,19 @@ def effective_position_fraction(
     b: float,
     variant: KellyVariant,
     max_position_fraction: float,
+    *,
+    kelly_extra_multiplier: float = 1.0,
 ) -> float:
     """
     按计划文档：effective = clamp(kelly_full * multiplier, 0, max_position_fraction)。
+    kelly_extra_multiplier：回测敏感性分析等场景下对 Kelly 再做线性缩放（默认 1）。
     """
     if max_position_fraction <= 0.0:
         return 0.0
     raw = kelly_fraction(p, b)
-    scaled = raw * variant.multiplier
+    em = kelly_extra_multiplier if math.isfinite(kelly_extra_multiplier) else 0.0
+    em = max(0.0, em)
+    scaled = raw * variant.multiplier * em
     return max(0.0, min(scaled, max_position_fraction))
 
 
@@ -144,6 +149,8 @@ class RiskLimits:
     max_single_loss_fraction: float = 0.02
     max_position_fraction: float = 0.15
     kelly_variant: KellyVariant = KellyVariant.HALF
+    """在 kelly_variant 倍数之上再乘的因子（用于参数扫描；默认 1）。"""
+    kelly_extra_multiplier: float = 1.0
     max_drawdown_fraction: float = 0.15
     max_daily_loss_fraction: float = 0.05
     max_consecutive_losses: int = 3
@@ -160,6 +167,8 @@ class RiskLimits:
             raise ValueError("max_consecutive_losses 至少为 1")
         if self.cooldown_seconds <= 0.0:
             raise ValueError("cooldown_seconds 必须为正")
+        if self.kelly_extra_multiplier < 0.0:
+            raise ValueError("kelly_extra_multiplier 不得为负")
 
 
 @dataclass(frozen=True)
@@ -200,7 +209,11 @@ def compute_position_quantity(
 
     adv = adverse_price_distance(entry_price, stop_price, side)
     eff = effective_position_fraction(
-        p, b, limits.kelly_variant, limits.max_position_fraction
+        p,
+        b,
+        limits.kelly_variant,
+        limits.max_position_fraction,
+        kelly_extra_multiplier=limits.kelly_extra_multiplier,
     )
 
     loss_budget = equity * limits.max_single_loss_fraction
@@ -435,7 +448,11 @@ class RiskEngine:
                 reasons.append(f"sizing_error:{e}")
 
         eff = effective_position_fraction(
-            p, b, self._limits.kelly_variant, self._limits.max_position_fraction
+            p,
+            b,
+            self._limits.kelly_variant,
+            self._limits.max_position_fraction,
+            kelly_extra_multiplier=self._limits.kelly_extra_multiplier,
         )
 
         allow = len(reasons) == 0 and qty > 0.0
