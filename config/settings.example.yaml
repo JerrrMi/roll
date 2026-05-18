@@ -28,6 +28,10 @@ timeframes:
   - "1h"
   - "4h"
 
+# 趋势评分模型默认值见代码 `TrendModelParams`；离线验收：
+#   conda activate roll-env
+#   python -m main trend-offline --symbol DOGEUSD_PERP --limit 600
+
 logging:
   level: INFO
   structured: true

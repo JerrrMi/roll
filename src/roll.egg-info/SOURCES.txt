@@ -5,11 +5,13 @@ src/roll/__init__.py
 src/roll/binance_client.py
 src/roll/logger.py
 src/roll/market_data.py
+src/roll/offline_trend.py
 src/roll/order_executor.py
 src/roll/position_manager.py
 src/roll/risk.py
 src/roll/state_store.py
 src/roll/trend_model.py
+src/roll/trend_offline.py
 src/roll.egg-info/PKG-INFO
 src/roll.egg-info/SOURCES.txt
 src/roll.egg-info/dependency_links.txt
