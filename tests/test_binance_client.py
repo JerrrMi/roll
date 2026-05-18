@@ -7,11 +7,17 @@ from unittest.mock import patch
 import pytest
 
 from roll.binance_client import (
-    BinanceCoinMClient,
     BinanceClientConfig,
-    CoinMFuturesSymbol,
+    BinanceCoinMClient,
+    BinanceCoinMSignedClient,
+    BinanceSignerError,
     InsufficientMonitorableSymbolsError,
+    build_hmac_sha256,
+    build_signed_query_string,
+    format_floor_to_step_decimal_str,
+    is_binance_coin_m_testnet_url,
     parse_coin_m_specs_from_exchange_info,
+    redact_signed_query_url,
     select_monitorable_coin_m_symbols,
 )
 
@@ -116,3 +122,53 @@ def test_sync_server_time_offset_cached() -> None:
     assert off == 2000  # 7000 - (4000 + 6000) // 2
     assert client.server_offset_ms == 2000
     assert client.estimated_server_time_ms() >= 2000
+
+
+def test_build_signed_hmac_matches_payload() -> None:
+    params = {"recvWindow": 5000, "timestamp": 1700000000000}
+    out = build_signed_query_string(params, signing_secret="s")
+    body, sep, sig = out.partition("&signature=")
+    assert sep
+    assert sig == build_hmac_sha256("s", body)
+
+
+def test_signed_query_lexicographic_and_bool() -> None:
+    out = build_signed_query_string(
+        {"timestamp": 1, "z": False, "a": True, "recvWindow": 2},
+        signing_secret="x",
+    )
+    base, _, _sig = out.partition("&signature=")
+    assert base == "a=true&recvWindow=2&timestamp=1&z=false"
+
+
+def test_redact_signature_param() -> None:
+    raw = (
+        "https://testnet.binancefuture.com/dapi/v1/order?"
+        "symbol=ABC&signature=aaaaaaaa&recvWindow=1"
+    )
+    clean = redact_signed_query_url(raw)
+    assert "signature=" not in clean
+    assert "recvWindow=1" in clean
+
+
+def test_is_testnet_url_https_only() -> None:
+    assert is_binance_coin_m_testnet_url("https://testnet.binancefuture.com")
+    assert not is_binance_coin_m_testnet_url("http://testnet.binancefuture.com")
+    assert not is_binance_coin_m_testnet_url("https://dapi.binance.com")
+
+
+def test_floor_quantity_to_step_and_signed_client_requires_creds() -> None:
+    assert format_floor_to_step_decimal_str("1.99", "0.5") == "1.5"
+
+    cfg = BinanceClientConfig(rest_base="https://testnet.binancefuture.com")
+    with pytest.raises(ValueError, match="api_key"):
+        BinanceCoinMSignedClient(cfg)
+
+    cfg_k = BinanceClientConfig(rest_base="https://testnet.binancefuture.com", api_key="k")
+    with pytest.raises(ValueError, match="api_secret"):
+        BinanceCoinMSignedClient(cfg_k)
+
+
+def test_signer_rejects_signature_keys() -> None:
+    with pytest.raises(BinanceSignerError):
+        build_signed_query_string({"signature": "x"}, signing_secret="k")
