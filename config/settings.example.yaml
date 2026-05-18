@@ -16,6 +16,7 @@ binance:
 candidates:
   - DOGE
   - AVAX
+  - BTC
   - SHIB
   - WIF
   - PEPE
@@ -27,6 +28,19 @@ timeframes:
   - "15m"
   - "1h"
   - "4h"
+
+# 策略主循环（`python -m main run-loop`）：首期仅 dry-run，公有行情 + 打印计划参数
+strategy:
+  loop_interval_sec: 120
+  klines_limit: 600
+  min_monitor_symbols: 3
+  dry_run_equity: 10000
+  initial_leverage: 25
+  stop_adverse_fraction: 0.05
+  kelly_p: 0.55
+  kelly_b: 1.2
+  # Testnet 候选 PERP 常少于 3；dry-run 仅拉公有行情时可改用实盘 host（仍不下单）
+  # public_rest_base: "https://dapi.binance.com"
 
 # 趋势评分模型默认值见代码 `TrendModelParams`；离线验收：
 #   conda activate roll-env

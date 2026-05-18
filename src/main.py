@@ -1,4 +1,4 @@
-"""应用入口：加载配置；支持 `trend-offline` / Testnet Signed 验收 / `reconcile-state` 单标的持仓对账。"""
+"""应用入口：加载配置；支持 `run-loop`（dry-run 策略循环）、`trend-offline`、Signed 验收、`reconcile-state`。"""
 
 from __future__ import annotations
 
@@ -166,6 +166,113 @@ def _state_store_from_settings(settings: dict) -> StateStore:
     return StateStore(backend=resolved_backend, path=path)
 
 
+def _apply_logging_from_settings(settings: dict) -> None:
+    import logging
+
+    raw = settings.get("logging")
+    if not isinstance(raw, dict):
+        return
+    name = str(raw.get("level", "INFO")).upper()
+    level = getattr(logging, name, logging.INFO)
+    logging.getLogger().setLevel(level)
+
+
+def _cmd_run_loop(project_root: Path, argv: list[str]) -> int:
+    """策略主循环：默认 dry-run，仅公有 REST + 打印计划动作，不下单。"""
+
+    from roll.binance_client import BinanceClientConfig, BinanceCoinMClient, InsufficientMonitorableSymbolsError
+    from roll.logger import get_logger
+    from roll.strategy_loop import (
+        parse_strategy_loop_params,
+        run_strategy_forever,
+        run_strategy_iteration,
+    )
+
+    ap = argparse.ArgumentParser(
+        prog="python -m main run-loop",
+        description=(
+            "多候选扫描 → 趋势评分 → 风控择优 → 单标的 dry-run 输出。"
+            "不进行签名请求与下单。"
+        ),
+    )
+    ap.add_argument(
+        "--config",
+        type=Path,
+        default=project_root / "config/settings.yaml",
+        help="读取 binance / candidates / strategy / logging",
+    )
+    ap.add_argument(
+        "--once",
+        action="store_true",
+        help="只跑一轮迭代后退出（验收用）",
+    )
+    ap.add_argument(
+        "--interval-sec",
+        type=float,
+        default=None,
+        help="覆盖配置 strategy.loop_interval_sec（仅循环模式）",
+    )
+    ap.add_argument(
+        "--no-dry-run",
+        action="store_true",
+        help="首期不支持：若指定则立即退出（防止误触发真实交易）。",
+    )
+    args_loop = ap.parse_args(argv)
+
+    if args_loop.no_dry_run:
+        print(
+            "[run-loop] 首期仅实现 dry-run；去掉 --no-dry-run 或使用默认 dry-run。",
+            file=sys.stderr,
+        )
+        return 2
+
+    cfg_path = _resolve_cfg_path(Path(args_loop.config), project_root)
+    settings = _load_settings_yaml(cfg_path)
+    if not settings:
+        print(f"[run-loop] 配置不存在或为空: {cfg_path}", file=sys.stderr)
+        return 2
+
+    _apply_logging_from_settings(settings)
+    log = get_logger("main.run_loop")
+
+    params = parse_strategy_loop_params(settings)
+    if args_loop.interval_sec is not None:
+        from dataclasses import replace
+
+        params = replace(params, loop_interval_sec=max(float(args_loop.interval_sec), 1.0))
+
+    b = settings.get("binance", {}) if isinstance(settings.get("binance"), dict) else {}
+    rest_base = str(b.get("rest_base", "https://testnet.binancefuture.com"))
+    if params.public_rest_base:
+        rest_base = params.public_rest_base
+        log.info("strategy.public_rest_base overrides market REST host (read-only): %s", rest_base)
+    coin_m_prefix = str(b.get("coin_m_prefix", "/dapi/v1"))
+    recv_window_ms = int(b.get("recv_window_ms", 5000))
+
+    client = BinanceCoinMClient(
+        BinanceClientConfig(
+            rest_base=rest_base,
+            coin_m_prefix=coin_m_prefix,
+            recv_window_ms=recv_window_ms,
+        ),
+    )
+
+    log.info("run-loop start dry_run=True rest_base=%s once=%s", rest_base, args_loop.once)
+    if args_loop.once:
+        try:
+            run_strategy_iteration(settings=settings, client=client, params=params, dry_run=True)
+        except InsufficientMonitorableSymbolsError:
+            log.warning(
+                "run-loop stopped: fewer than min_monitor_symbols matched on this venue "
+                "(try adding exact baseAsset codes from exchangeInfo or set strategy.public_rest_base)."
+            )
+            return 3
+        return 0
+
+    run_strategy_forever(settings=settings, client=client, dry_run=True, params=params)
+    return 0
+
+
 def _cmd_reconcile_state(project_root: Path, argv: list[str]) -> int:
     from roll.binance_client import BinanceClientConfig, BinanceCoinMSignedClient, is_binance_coin_m_testnet_url
     from roll.position_manager import bootstrap_position_manager_from_exchange_client
@@ -277,6 +384,9 @@ def main(argv: list[str] | None = None) -> int:
     if argv[:1] == ["reconcile-state"]:
         return _cmd_reconcile_state(project_root, argv[1:])
 
+    if argv[:1] == ["run-loop"]:
+        return _cmd_run_loop(project_root, argv[1:])
+
     parser = argparse.ArgumentParser(description="Binance COIN-M 滚仓系统入口")
     parser.add_argument(
         "--config",
@@ -307,6 +417,9 @@ def main(argv: list[str] | None = None) -> int:
     log.info(
         "自动交易前先执行（Testnet、`BINANCE_*` 已就绪时）"
         " `python -m main reconcile-state` 以对账持仓与挂单并恢复全局单标的锁。"
+    )
+    log.info(
+        "策略 dry-run 主循环：`python -m main run-loop --once`（默认公有 REST，不下单）。"
     )
     log.info("运行 `python -m main trend-offline --symbol YOUR_PERP_SYMBOL` 可离线验收趋势模型。")
     log.info(
