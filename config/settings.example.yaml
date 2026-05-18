@@ -1,0 +1,38 @@
+# Binance COIN-M Futures — 示例配置（复制为 settings.yaml 后修改）
+# 默认 Testnet；切换实盘请修改 rest_base 并确认风险。
+
+environment: testnet
+
+binance:
+  # 官方 Testnet（COIN-M 与 USD-M 共用该 host；路径区分 /dapi vs /fapi）
+  rest_base: "https://testnet.binancefuture.com"
+  coin_m_prefix: "/dapi/v1"
+  # 实盘示例（勿在 Testnet 任务中误用）
+  # rest_base: "https://dapi.binance.com"
+  # coin_m_prefix: "/dapi/v1"
+  recv_window_ms: 5000
+
+# 人类可读资产代码；运行时需通过 exchangeInfo 映射到实际 COIN-M symbol（实现于后续阶段）
+candidates:
+  - DOGE
+  - AVAX
+  - SHIB
+  - WIF
+  - PEPE
+  - TON
+  - HYPE
+
+# 趋势模型时间周期（占位，与 plan 文档一致）
+timeframes:
+  - "15m"
+  - "1h"
+  - "4h"
+
+logging:
+  level: INFO
+  structured: true
+
+state:
+  # 后续可使用 SQLite 或 JSON；骨架阶段仅占位
+  backend: sqlite
+  path: "./data/roll_state.sqlite"

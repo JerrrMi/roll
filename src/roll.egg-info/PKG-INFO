@@ -1,0 +1,74 @@
+Metadata-Version: 2.4
+Name: roll
+Version: 0.1.0
+Summary: Binance COIN-M Futures 滚仓交易系统（骨架阶段）
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: PyYAML>=6.0
+Provides-Extra: dev
+Requires-Dist: pytest>=7.4; extra == "dev"
+
+# 滚仓交易系统（Python 骨架）
+
+面向 **Binance COIN-M Futures** 的滚仓策略自动化框架。当前仓库为**骨架阶段**：仅包含模块划分、配置样例、入口脚本与基础测试，**不包含真实交易、行情拉取或签名下单逻辑**。
+
+## 环境约束
+
+所有终端命令执行前请先激活 Conda 环境：
+
+```bash
+conda activate roll-env
+```
+
+## 默认网络：Testnet
+
+- 默认使用 Binance Futures **Testnet** REST：`https://testnet.binancefuture.com`，COIN-M 路径前缀 `/dapi/v1`。
+- 切换到实盘前务必在配置中显式修改，并理解资金与 API 权限风险。
+
+## 安装（开发）
+
+在项目根目录执行：
+
+```bash
+conda activate roll-env
+pip install -e ".[dev]"
+```
+
+## 配置
+
+复制示例配置并按需修改：
+
+```bash
+copy config\settings.example.yaml config\settings.yaml
+```
+
+（Linux/macOS 使用 `cp`。）
+
+将 API Key / Secret 放在环境变量中（**不要把 Secret 写入仓库**）。可参考 `config/env.example`。
+
+## 运行入口（骨架占位）
+
+```bash
+conda activate roll-env
+python -m main
+```
+
+当前 `main` 仅加载示例配置并打印说明，不连接交易所。
+
+## 运行测试
+
+```bash
+conda activate roll-env
+pytest
+```
+
+验收：测试应全部通过，用于确认包结构、导入路径与基础占位逻辑正常。
+
+## 安全边界
+
+- _skeleton_ 阶段不发起真实 HTTP 下单请求；后续阶段在 Testnet 上验收。
+- 日志与配置中**不得**写入 API Secret；参见 `docs/滚仓系统实现的plan文档.md`。
+
+## 文档
+
+详细设计与分阶段验收见 `docs/滚仓系统实现的plan文档.md`。
