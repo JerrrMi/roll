@@ -712,14 +712,14 @@ class BinanceCoinMSignedClient(BinanceUsdmClient):
         return self._http_json_request(method, url, send_api_key_if_configured=True)
 
     def account(self) -> dict[str, Any]:
-        """GET /dapi/v1/account"""
+        """GET /fapi/v1/account（路径由 api_prefix 决定，默认 /fapi/v1）。"""
         data = self._request_json_signed("GET", "/account")
         if not isinstance(data, Mapping):
             raise BinanceHTTPError(f"unexpected account payload: {type(data)}")
         return dict(data)
 
     def position_risk(self, *, symbol: str | None = None, pair: str | None = None) -> list[dict[str, Any]]:
-        """GET /dapi/v1/positionRisk"""
+        """GET /fapi/v1/positionRisk（路径由 api_prefix 决定）。"""
         p: dict[str, Any] = {}
         if symbol is not None:
             p["symbol"] = symbol
@@ -737,7 +737,7 @@ class BinanceCoinMSignedClient(BinanceUsdmClient):
         return rows
 
     def open_orders(self, *, symbol: str | None = None, pair: str | None = None) -> list[dict[str, Any]]:
-        """GET /dapi/v1/openOrders"""
+        """GET /fapi/v1/openOrders（路径由 api_prefix 决定）。"""
         p: dict[str, Any] = {}
         if symbol is not None:
             p["symbol"] = symbol
@@ -755,7 +755,7 @@ class BinanceCoinMSignedClient(BinanceUsdmClient):
         return out
 
     def set_leverage(self, *, symbol: str, leverage: int) -> dict[str, Any]:
-        """POST /dapi/v1/leverage"""
+        """POST /fapi/v1/leverage"""
         data = self._request_json_signed(
             "POST",
             "/leverage",
@@ -766,7 +766,7 @@ class BinanceCoinMSignedClient(BinanceUsdmClient):
         return dict(data)
 
     def new_order_raw(self, params: Mapping[str, Any]) -> dict[str, Any]:
-        """POST /dapi/v1/order — 直接使用 Binance 参数字典（均已为 str / bool / int，数量等为 DECIMAL 字符串）。"""
+        """POST /fapi/v1/order — 直接使用 Binance 参数字典（均已为 str / bool / int，数量等为 DECIMAL 字符串）。"""
         data = self._request_json_signed("POST", "/order", dict(params))
         if not isinstance(data, Mapping):
             raise BinanceHTTPError(f"unexpected new order payload: {type(data)}")
@@ -783,7 +783,7 @@ class BinanceCoinMSignedClient(BinanceUsdmClient):
         client_order_id: str | None = None,
         new_order_resp_type: str | None = None,
     ) -> dict[str, Any]:
-        """便捷封装：COIN-M MARKET（quantity 合约张数为 DECIMAL 字符串）。"""
+        """便捷封装：USD-M MARKET（quantity 为 base asset 数量 DECIMAL 字符串）。"""
         p: dict[str, Any] = {
             "symbol": symbol,
             "side": side.upper(),
@@ -831,7 +831,7 @@ class BinanceCoinMSignedClient(BinanceUsdmClient):
         order_id: int | None = None,
         orig_client_order_id: str | None = None,
     ) -> dict[str, Any]:
-        """GET /dapi/v1/order"""
+        """GET /fapi/v1/order"""
         if order_id is None and orig_client_order_id is None:
             raise ValueError("get_order 需要 order_id 或 orig_client_order_id 之一")
         p: dict[str, Any] = {"symbol": symbol}
@@ -851,7 +851,7 @@ class BinanceCoinMSignedClient(BinanceUsdmClient):
         order_id: int | None = None,
         orig_client_order_id: str | None = None,
     ) -> dict[str, Any]:
-        """DELETE /dapi/v1/order"""
+        """DELETE /fapi/v1/order"""
         if order_id is None and orig_client_order_id is None:
             raise ValueError("cancel_order 需要 order_id 或 orig_client_order_id 之一")
         p: dict[str, Any] = {"symbol": symbol}
@@ -951,3 +951,7 @@ class BinanceCoinMSignedClient(BinanceUsdmClient):
             quantity=qty_both,
             reduce_only=True,
         )
+
+
+# 3.0 推荐别名
+BinanceUsdmSignedClient = BinanceCoinMSignedClient

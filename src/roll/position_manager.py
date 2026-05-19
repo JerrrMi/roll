@@ -124,6 +124,14 @@ class ReconcileOutcome:
         )
 
 
+def reconcile_usdm_account(
+    position_risk_rows: SequenceRows,
+    open_order_rows: SequenceRows,
+) -> ReconcileOutcome:
+    """USD-M 对账（同 `reconcile_coin_m_account`；类名历史保留）。"""
+    return reconcile_coin_m_account(position_risk_rows, open_order_rows)
+
+
 def reconcile_coin_m_account(
     position_risk_rows: SequenceRows,
     open_order_rows: SequenceRows,
@@ -580,4 +588,4 @@ def position_manager_from_saved_view(
 
 def reconcile_from_signed_client(position_risk_rows: SequenceRows, open_orders_rows: SequenceRows) -> ReconcileOutcome:
     """对账适配器别名，便于交易策略代码统一命名。"""
-    return reconcile_coin_m_account(position_risk_rows, open_orders_rows)
+    return reconcile_usdm_account(position_risk_rows, open_orders_rows)
