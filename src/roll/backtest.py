@@ -14,8 +14,11 @@ from roll.risk import (
     RiskEngine,
     RiskLimits,
     Side,
+    USDM_LINEAR_CONTRACT_MULTIPLIER,
     fixed_stop_price,
+    linear_pnl_usdt,
 )
+from roll.usdm_account import parse_min_notional_usdt, usdm_linear_contract_multiplier
 from roll.strategy_loop import (
     rank_directional_signals,
     signal_side_to_risk_side,
@@ -168,9 +171,9 @@ def _pnl_quote(
     qty: float,
     cm: float,
 ) -> float:
-    if side == "long":
-        return qty * (exit_ - entry) * cm
-    return qty * (entry - exit_) * cm
+    """USDT 线性永续 PnL；cm 保留参数以兼容历史字段，USD-M 应为 1.0。"""
+    _ = cm
+    return linear_pnl_usdt(side, qty, entry, exit_)
 
 
 def _annualized_return(equity_start: float, equity_end: float, t_start: float, t_end: float) -> float:
@@ -400,7 +403,7 @@ def run_backtest(
     pos_sym: str | None = None
     pos_side: Side | None = None
     qty: float = 0.0
-    cm: float = 1.0
+    cm: float = USDM_LINEAR_CONTRACT_MULTIPLIER
     entry_ref: float = 0.0
     extreme: float = 0.0
     cooldown_until_i: int = -1
@@ -421,8 +424,8 @@ def run_backtest(
         nonlocal cash, pos_sym, pos_side, qty, cm, entry_ref, extreme
         ex = _apply_slippage_exit(side_p, px_exit_raw, cfg.slippage_bps)
         g = _pnl_quote(side_p, entry_ref, ex, qty, cm)
-        fee_close = abs(qty) * ex * cm * cfg.fee_rate
-        fee_open = abs(qty) * entry_ref * cm * cfg.fee_rate
+        fee_close = abs(qty) * ex * cfg.fee_rate
+        fee_open = abs(qty) * entry_ref * cfg.fee_rate
         fe_total = fee_open + fee_close
         cash += g - fee_close
         trades.append(
@@ -444,7 +447,7 @@ def run_backtest(
         pos_sym = None
         pos_side = None
         qty = 0.0
-        cm = 1.0
+        cm = USDM_LINEAR_CONTRACT_MULTIPLIER
         entry_ref = 0.0
         extreme = 0.0
 
@@ -565,7 +568,8 @@ def run_backtest(
                 min_q = float(sp.market_min_qty or sp.min_qty) if (sp.market_min_qty or sp.min_qty) else 0.0
             except (TypeError, ValueError):
                 min_q = 0.0
-            cm_u = max(float(sp.contract_size), 1e-12)
+            cm_u = usdm_linear_contract_multiplier(sp)
+            min_ntl = parse_min_notional_usdt(sp)
             oe = engine.evaluate_open(
                 ts=ts_eval,
                 equity=equity_eval,
@@ -577,11 +581,13 @@ def run_backtest(
                 quantity_step=step_sz,
                 min_quantity=min_q,
                 contract_multiplier=cm_u,
+                min_notional_usdt=min_ntl,
+                initial_leverage=strat_params.initial_leverage,
             )
             if oe.allow and oe.position is not None:
                 q = float(oe.position.quantity)
                 entry_eff = _apply_slippage_entry(sk, mark, cfg.slippage_bps)
-                fee_open = abs(q) * entry_eff * cm_u * cfg.fee_rate
+                fee_open = abs(q) * entry_eff * cfg.fee_rate
                 cash -= fee_open
                 pos_sym = sym_r.upper()
                 pos_side = sk

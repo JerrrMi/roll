@@ -10,6 +10,32 @@ from typing import Literal
 
 Side = Literal["long", "short"]
 
+# USD-M USDT 线性永续默认乘数（quantity 为 base asset 数量）
+USDM_LINEAR_CONTRACT_MULTIPLIER = 1.0
+
+
+def notional_usdt(quantity: float, price: float) -> float:
+    """名义价值（USDT）:: abs(quantity_base * price_usdt)。"""
+    if price <= 0.0 or not math.isfinite(price):
+        return 0.0
+    if not math.isfinite(quantity):
+        return 0.0
+    return abs(quantity * price)
+
+
+def linear_pnl_usdt(
+    side: Side,
+    quantity: float,
+    entry_price: float,
+    exit_price: float,
+) -> float:
+    """USDT 线性永续盈亏：多头 qty*(exit-entry)，空头 qty*(entry-exit)。"""
+    if quantity <= 0.0 or entry_price <= 0.0 or exit_price <= 0.0:
+        return 0.0
+    if side == "long":
+        return quantity * (exit_price - entry_price)
+    return quantity * (entry_price - exit_price)
+
 
 class KellyVariant(Enum):
     """对完整 Kelly 分数的缩放：全、半、四分之一。"""
@@ -398,7 +424,10 @@ class RiskEngine:
         b: float,
         quantity_step: float = 0.0,
         min_quantity: float = 0.0,
-        contract_multiplier: float = 1.0,
+        contract_multiplier: float = USDM_LINEAR_CONTRACT_MULTIPLIER,
+        min_notional_usdt: float = 0.0,
+        available_margin_usdt: float | None = None,
+        initial_leverage: int = 1,
     ) -> OpenEvaluation:
         reasons: list[str] = []
 
@@ -436,8 +465,29 @@ class RiskEngine:
                 if qty <= 0.0:
                     reasons.append("quantity_zero_after_caps_or_step")
                 else:
+                    ntl = notional_usdt(qty, entry_price) * contract_multiplier
+                    if min_notional_usdt > 0.0 and ntl + 1e-9 < min_notional_usdt:
+                        reasons.append(
+                            f"below_min_notional:{ntl:.8g}<{min_notional_usdt:.8g}"
+                        )
+                        qty = 0.0
+                        pos = None
+                    elif available_margin_usdt is not None:
+                        lev = max(int(initial_leverage), 1)
+                        need_margin = ntl / lev
+                        if available_margin_usdt <= 0.0:
+                            reasons.append("available_margin_non_positive")
+                            qty = 0.0
+                            pos = None
+                        elif need_margin > available_margin_usdt + 1e-6:
+                            reasons.append(
+                                f"insufficient_available_margin:need≈{need_margin:.4f}"
+                                f">avail={available_margin_usdt:.4f}"
+                            )
+                            qty = 0.0
+                            pos = None
                     # 数值安全：确保隐含亏损不超过单笔上限（含浮点误差）
-                    if (
+                    if pos is not None and (
                         pos.implied_loss_at_stop_fraction_of_equity
                         > self._limits.max_single_loss_fraction + 1e-9
                     ):

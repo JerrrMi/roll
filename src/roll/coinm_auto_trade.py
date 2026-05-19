@@ -13,7 +13,6 @@ from roll.binance_client import (
     BinanceCoinMSignedClient,
     BinanceHTTPError,
     CoinMFuturesSymbol,
-    format_floor_to_step_decimal_str,
     format_price_to_tick_decimal_str,
     select_monitorable_coin_m_symbols,
 )
@@ -21,7 +20,20 @@ from roll.logger import get_logger
 from roll.market_data import parse_candidate_assets
 from roll.offline_trend import evaluate_symbol_offline_public
 from roll.position_manager import PositionManager, TradeLockState, reconcile_coin_m_account
-from roll.risk import RiskEngine, RiskLimits, Side, fixed_stop_price as _fixed_stop_price, trailing_stop_price
+from roll.risk import (
+    RiskEngine,
+    RiskLimits,
+    Side,
+    fixed_stop_price as _fixed_stop_price,
+    trailing_stop_price,
+)
+from roll.usdm_account import (
+    format_market_quantity_str,
+    parse_min_notional_usdt,
+    parse_usdt_account_snapshot,
+    precheck_usdm_market_open,
+    usdm_linear_contract_multiplier,
+)
 from roll.state_store import RuntimeState, StateStore
 from roll.strategy_loop import (
     InsufficientMonitorableSymbolsError,
@@ -44,33 +56,26 @@ def reconcile_and_restore_pm(pm: PositionManager, client: BinanceCoinMSignedClie
     pm.restore_from_exchange(outcome)
 
 
-def _marginal_wallet_balance_coin(account: Mapping[str, Any], margin_asset: str) -> Decimal:
-    rows = account.get("assets")
-    lst = rows if isinstance(rows, list) else []
-    ma = margin_asset.strip().upper()
-    for row in lst:
-        if not isinstance(row, Mapping):
-            continue
-        ast = row.get("asset")
-        if str(ast).upper() != ma:
-            continue
-        wb = Decimal(str(row.get("walletBalance", "0")))
-        pr = Decimal(str(row.get("unrealizedProfit", "0")))
-        return wb + pr
-    return Decimal(0)
+def estimate_usdt_equity_for_risk(*, account: Mapping[str, Any]) -> float:
+    """USD-M 风控权益：USDT wallet balance + unrealized profit（不乘标记价）。"""
+    snap = parse_usdt_account_snapshot(account)
+    return snap.equity_usdt if snap.equity_usdt > 0.0 else 0.0
 
 
+def estimate_available_margin_usdt(*, account: Mapping[str, Any]) -> float:
+    snap = parse_usdt_account_snapshot(account)
+    return max(snap.available_margin_usdt, 0.0)
+
+
+# 历史别名（2.0 曾用 margin_asset 余额 * 标记价）
 def estimate_quote_equity_for_risk(
     *,
     account: Mapping[str, Any],
-    spec: CoinMFuturesSymbol,
-    mark_price_quote: float,
+    spec: CoinMFuturesSymbol | None = None,
+    mark_price_quote: float | None = None,
 ) -> float:
-    bal = _marginal_wallet_balance_coin(account, spec.margin_asset)
-    px = Decimal(str(mark_price_quote))
-    if bal <= 0 or px <= 0:
-        return 0.0
-    return float(bal * px)
+    _ = spec, mark_price_quote
+    return estimate_usdt_equity_for_risk(account=account)
 
 
 def _lots(spec: CoinMFuturesSymbol, *, market: bool) -> tuple[str, str, str]:
@@ -321,7 +326,7 @@ def _execute_open_flow(
         raise ValueError("合约缺少 tick_size / MARKETLOT step")
     try:
         signed_client.set_leverage(symbol=symbol, leverage=params.initial_leverage)
-        qty_s = format_floor_to_step_decimal_str(str(qty_pick), step)
+        qty_s = format_market_quantity_str(spec, qty_pick)
         emit(f"[live] MARKET_OPEN symbol={symbol} side={side_pick} qty={qty_s}")
         ot = signed_client.new_market_order(
             symbol=symbol,
@@ -502,6 +507,13 @@ def run_live_strategy_iteration(
 
             ts = time.time()
             account = signed_client.account()
+            acct_snap = parse_usdt_account_snapshot(account)
+            avail_margin = acct_snap.available_margin_usdt
+            out(
+                f"[account_usdt] equity≈{acct_snap.equity_usdt:.4f} "
+                f"available≈{avail_margin:.4f} wallet≈{acct_snap.wallet_balance_usdt:.4f} "
+                f"upnl≈{acct_snap.unrealized_profit_usdt:.4f}"
+            )
             out("[trend_scan]")
             for sym_e, sg in assessed:
                 rr = "; ".join(sg.rejection_reasons) if sg.rejection_reasons else ""
@@ -522,9 +534,7 @@ def run_live_strategy_iteration(
                     if sp_v is None:
                         continue
                     mark_c_v = fetch_ticker_px(signed_client, spx_v)
-                    equity_lv = estimate_quote_equity_for_risk(
-                        account=account, spec=sp_v, mark_price_quote=mark_c_v
-                    )
+                    equity_lv = estimate_usdt_equity_for_risk(account=account)
                     stop_v = _fixed_stop_price(sk_side, mark_c_v, pcfg.stop_adverse_fraction)
                     step_sz = _float_step(sp_v.market_step_size or sp_v.step_size)
                     min_raw = sp_v.market_min_qty or sp_v.min_qty
@@ -532,6 +542,8 @@ def run_live_strategy_iteration(
                         min_q_v = float(min_raw) if min_raw else 0.0
                     except (TypeError, ValueError):
                         min_q_v = 0.0
+                    cm = usdm_linear_contract_multiplier(sp_v)
+                    min_ntl = parse_min_notional_usdt(sp_v)
 
                     oe_try = rk.evaluate_open(
                         ts=ts,
@@ -543,12 +555,33 @@ def run_live_strategy_iteration(
                         b=pcfg.kelly_b,
                         quantity_step=step_sz,
                         min_quantity=min_q_v,
-                        contract_multiplier=max(sp_v.contract_size, 1e-12),
+                        contract_multiplier=cm,
+                        min_notional_usdt=min_ntl,
+                        available_margin_usdt=avail_margin,
+                        initial_leverage=pcfg.initial_leverage,
                     )
-                    if oe_try.allow:
+                    if oe_try.allow and oe_try.position is not None:
+                        pre = precheck_usdm_market_open(
+                            spec=sp_v,
+                            quantity_raw=float(oe_try.quantity),
+                            entry_price=mark_c_v,
+                            equity_usdt=equity_lv,
+                            available_margin_usdt=avail_margin,
+                            limits_max_position_fraction=limits.max_position_fraction,
+                            limits_max_single_loss_fraction=limits.max_single_loss_fraction,
+                            implied_loss_at_stop_fraction=oe_try.position.implied_loss_at_stop_fraction_of_equity,
+                            initial_leverage=pcfg.initial_leverage,
+                        )
+                        if not pre.ok:
+                            out(
+                                f"[risk_try rank={rank_idx}] symbol={spx_v} side={sk_side} REJECT "
+                                f"precheck: {'; '.join(pre.reasons)}"
+                            )
+                            continue
                         out(
                             f"[risk_try rank={rank_idx}] symbol={spx_v} side={sk_side} PASS "
-                            f"qty={oe_try.quantity:.8g} entry≈{mark_c_v:.8g} equity≈{equity_lv:.4f}"
+                            f"qty={pre.quantity:.8g} notional≈{pre.notional_usdt:.4f} USDT "
+                            f"entry≈{mark_c_v:.8g} equity≈{equity_lv:.4f}"
                         )
                         sym_pick_o, side_pick_o, oe_pick_o = spx_v, sk_side, oe_try
                         break

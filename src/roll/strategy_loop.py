@@ -16,7 +16,14 @@ from roll.binance_client import (
 from roll.logger import get_logger
 from roll.market_data import parse_candidate_assets
 from roll.offline_trend import evaluate_symbol_offline_public
-from roll.risk import OpenEvaluation, RiskEngine, RiskLimits, Side, fixed_stop_price
+from roll.risk import (
+    OpenEvaluation,
+    RiskEngine,
+    RiskLimits,
+    Side,
+    fixed_stop_price,
+)
+from roll.usdm_account import parse_min_notional_usdt, usdm_linear_contract_multiplier
 from roll.trend_model import SignalSide, TrendModelParams, TrendSignal
 
 LoggerFn = Callable[[str], None]
@@ -213,6 +220,8 @@ def try_select_single_symbol(
         except (TypeError, ValueError):
             min_q = 0.0
 
+        cm = usdm_linear_contract_multiplier(spec)
+        min_ntl = parse_min_notional_usdt(spec)
         oe = risk_engine.evaluate_open(
             ts=ts,
             equity=equity,
@@ -223,7 +232,9 @@ def try_select_single_symbol(
             b=params.kelly_b,
             quantity_step=step_sz,
             min_quantity=min_q,
-            contract_multiplier=max(spec.contract_size, 1e-12),
+            contract_multiplier=cm,
+            min_notional_usdt=min_ntl,
+            initial_leverage=params.initial_leverage,
         )
         if oe.allow:
             emit(
@@ -368,7 +379,11 @@ def run_strategy_iteration(
     out(f"  action=MARKET_OPEN side={side_pick} symbol={sym_pick}")
     out(f"  leverage(initial,target)={p.initial_leverage}x (dry-run: no leverage REST)")
     out(f"  reference_price≈{entry_live:.8g} stop_price≈{stop_px:.8g} adverse_frac={p.stop_adverse_fraction}")
-    out(f"  equity(simulated)={equity:.4f} quantity_contracts≈{oe_pick.quantity:.8g}")
+    ntl = abs(oe_pick.quantity * entry_live) if entry_live == entry_live else float("nan")
+    out(
+        f"  equity(simulated)={equity:.4f} quantity_base≈{oe_pick.quantity:.8g} "
+        f"notional_usdt≈{ntl:.4f}"
+    )
     out(f"  eff_kelly_fraction≈{oe_pick.effective_kelly_fraction:.6f}")
     out("[dry-run] order_executor bypass — zero signed/order REST calls.")
 

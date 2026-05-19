@@ -16,6 +16,8 @@ from roll.risk import (
     fixed_stop_price,
     floor_to_step,
     kelly_fraction,
+    linear_pnl_usdt,
+    notional_usdt,
     trailing_stop_price,
 )
 
@@ -234,6 +236,30 @@ def test_never_exceed_max_position_notional() -> None:
     cap = equity * limits.max_position_fraction
     assert res.notional <= cap + 1e-5
     assert res.quantity * entry <= cap + 1e-5
+
+
+def test_linear_pnl_usdt_helpers() -> None:
+    assert linear_pnl_usdt("long", 2.0, 50.0, 55.0) == pytest.approx(10.0)
+    assert linear_pnl_usdt("short", 2.0, 50.0, 45.0) == pytest.approx(10.0)
+    assert notional_usdt(4.0, 12.5) == pytest.approx(50.0)
+
+
+def test_risk_engine_available_margin_gate() -> None:
+    eng = RiskEngine(RiskLimits(kelly_variant=KellyVariant.FULL, max_position_fraction=0.5))
+    stop = fixed_stop_price("long", 100.0, 0.02)
+    ev = eng.evaluate_open(
+        ts=T0,
+        equity=10_000.0,
+        entry_price=100.0,
+        stop_price=stop,
+        side="long",
+        p=0.6,
+        b=1.5,
+        available_margin_usdt=1.0,
+        initial_leverage=25,
+    )
+    assert not ev.allow
+    assert any("insufficient_available_margin" in r for r in ev.reasons)
 
 
 def test_risk_limits_validation() -> None:
