@@ -36,4 +36,4 @@ _roll_acceptance_assert_reconcile_clean "$POST"
 
 cp docs/templates/live-acceptance-record.template.md "${DIR}/record.md" 2>/dev/null || true
 
-echo "[acceptance] 阶段 1 完成。请填写 ${DIR}/record.md 并复核 Testnet 网页 COIN-M。"
+echo "[acceptance] 阶段 1 完成。请填写 ${DIR}/record.md 并复核 Testnet 网页 U 本位合约 / USD-M。"

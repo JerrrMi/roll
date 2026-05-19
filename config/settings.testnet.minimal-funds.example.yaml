@@ -1,0 +1,32 @@
+# Testnet signed 验收 — 最小可交易数量 / 极低风险（合并进 config/settings.testnet.yaml）
+#
+# 说明：
+# - open_quantity_mode: min_market 使用 exchangeInfo MARKET 最小 quantity
+# - 须同时设置 testnet_signed_orders_enabled: true 且 CLI --no-dry-run
+# - 复制所需键到 settings.testnet.yaml；勿将 API Key 提交到 Git
+
+environment: testnet
+
+secrets:
+  file: "./config/secrets/testnet.env"
+
+binance:
+  product: "usdm"
+  rest_base: "https://testnet.binancefuture.com"
+  api_prefix: "/fapi/v1"
+  recv_window_ms: 5000
+
+strategy:
+  testnet_signed_orders_enabled: true
+  live_trading_enabled: false
+  open_quantity_mode: min_market
+  loop_interval_sec: 120
+  min_monitor_symbols: 3
+  initial_leverage: 5
+  stop_adverse_fraction: 0.05
+  kelly_p: 0.55
+  kelly_b: 1.2
+
+state:
+  backend: json
+  path: "./data/roll_state_testnet.json"

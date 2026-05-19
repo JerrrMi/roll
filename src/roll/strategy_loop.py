@@ -54,6 +54,8 @@ class StrategyLoopParams:
     testnet_signed_orders_enabled: bool = False
     # 安全开关：environment=live 时 signed 自动交易须显式 true
     live_trading_enabled: bool = False
+    # 开仓数量：`risk`（Kelly/风控）或 `min_market`（交易所最小可交易量，验收用）
+    open_quantity_mode: str = "risk"
 
 
 def parse_strategy_loop_params(settings: Mapping[str, Any]) -> StrategyLoopParams:
@@ -97,6 +99,13 @@ def parse_strategy_loop_params(settings: Mapping[str, Any]) -> StrategyLoopParam
     lte = raw.get("live_trading_enabled")
     live_en = bool(lte) if isinstance(lte, bool) else StrategyLoopParams.live_trading_enabled
 
+    oqm_raw = raw.get("open_quantity_mode")
+    oqm = StrategyLoopParams.open_quantity_mode
+    if isinstance(oqm_raw, str):
+        m = oqm_raw.strip().lower()
+        if m in ("risk", "min_market"):
+            oqm = m
+
     return StrategyLoopParams(
         loop_interval_sec=max(interval, 1.0),
         klines_limit=max(klines_lim, 50),
@@ -110,6 +119,7 @@ def parse_strategy_loop_params(settings: Mapping[str, Any]) -> StrategyLoopParam
         trail_stop_fraction=trail_frac,
         testnet_signed_orders_enabled=testnet_signed,
         live_trading_enabled=live_en,
+        open_quantity_mode=oqm,
     )
 
 
@@ -270,7 +280,7 @@ def run_strategy_iteration(
     iv = intervals if intervals is not None else intervals_from_settings(settings)
 
     if not dry_run:
-        from roll.coinm_auto_trade import run_live_strategy_iteration
+        from roll.usdm_auto_trade import run_live_strategy_iteration
         from roll.position_manager import PositionManager
         from roll.state_store import StateStore as _RtStore
 

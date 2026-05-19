@@ -22,6 +22,7 @@ DOCS = [
     "docs/checklists/live-go-live-checklist.md",
     "docs/templates/live-acceptance-record.template.md",
     "config/settings.live.minimal-funds.example.yaml",
+    "config/settings.testnet.minimal-funds.example.yaml",
 ]
 
 
