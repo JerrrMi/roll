@@ -29,8 +29,8 @@ class StrategyLoopParams:
     public_rest_base：若设置，run-loop 仅用该公有 REST host 拉 exchangeInfo/K 线/ticker；
     Testnet signed 模式下必须与 binance.rest_base 一致或删除该字段。
     trail_stop_fraction：>0 时启用基于极值的追踪 STOP（仍可被初始止损底价约束）。
-    testnet_signed_orders_enabled：仅 true 时允许 `run-loop --no-dry-run` 在 Testnet 发 signed 单。
-    live_trading_enabled：预留实盘开关，默认 false；当前代码不会在实盘 REST 上执行 signed run-loop。
+    testnet_signed_orders_enabled：environment=testnet 时，`run-loop --no-dry-run` 须为 true 才发 signed 单。
+    live_trading_enabled：environment=live 时，`run-loop --no-dry-run` 须为 true 才发 signed 单。
     """
 
     loop_interval_sec: float = 60.0

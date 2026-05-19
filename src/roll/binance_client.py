@@ -25,6 +25,7 @@ DEFAULT_LIVE_REST_BASE = "https://dapi.binance.com"
 DEFAULT_COIN_M_PREFIX = "/dapi/v1"
 
 BINANCE_ALLOWED_TESTNET_HOSTS = frozenset({"testnet.binancefuture.com"})
+BINANCE_ALLOWED_LIVE_HOSTS = frozenset({"dapi.binance.com"})
 
 
 class BinanceHTTPError(RuntimeError):
@@ -133,6 +134,18 @@ def is_binance_coin_m_testnet_url(rest_base_url: str) -> bool:
     if parsed.scheme.lower() != "https":
         return False
     return host in BINANCE_ALLOWED_TESTNET_HOSTS
+
+
+def is_binance_coin_m_live_url(rest_base_url: str) -> bool:
+    """是否指向官方 COIN-M 实盘 REST host（https://dapi.binance.com）。
+
+    为降低明文传输风险：仅 **https** 且 hostname 精确匹配时返回 True。
+    """
+    parsed = urlparse(rest_base_url)
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme.lower() != "https":
+        return False
+    return host in BINANCE_ALLOWED_LIVE_HOSTS
 
 
 @dataclass

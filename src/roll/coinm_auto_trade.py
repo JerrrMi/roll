@@ -14,7 +14,6 @@ from roll.binance_client import (
     CoinMFuturesSymbol,
     format_floor_to_step_decimal_str,
     format_price_to_tick_decimal_str,
-    is_binance_coin_m_testnet_url,
     select_monitorable_coin_m_symbols,
 )
 from roll.logger import get_logger
@@ -375,10 +374,15 @@ def run_live_strategy_iteration(
     rb = intervals if intervals is not None else intervals_from_settings(settings)
     pcfg = params or parse_strategy_loop_params(settings)
 
-    if not is_binance_coin_m_testnet_url(signed_client.config.rest_base):
-        raise RuntimeError(
-            f"自动交易仅允许 Futures Testnet（testnet.binancefuture.com），当前 rest_base={signed_client.config.rest_base!r}"
-        )
+    from roll.signed_guard import assert_signed_trading_allowed
+
+    assert_signed_trading_allowed(
+        environment=str(settings.get("environment", "testnet")),
+        rest_base=signed_client.config.rest_base,
+        testnet_signed_orders_enabled=pcfg.testnet_signed_orders_enabled,
+        live_trading_enabled=pcfg.live_trading_enabled,
+        command_label="strategy_loop",
+    )
     if pcfg.public_rest_base:
         pu = str(pcfg.public_rest_base).rstrip("/").lower()
         su = str(signed_client.config.rest_base).rstrip("/").lower()

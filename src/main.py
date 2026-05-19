@@ -351,7 +351,7 @@ def _cmd_backtest(project_root: Path, argv: list[str]) -> int:
 
 
 def _cmd_run_loop(project_root: Path, argv: list[str]) -> int:
-    """策略主循环：默认 dry-run；`--no-dry-run` 且 binance.rest_base 为 Futures Testnet 时 Signed 自动交易闭环。"""
+    """策略主循环：默认 dry-run；`--no-dry-run` 在 environment-aware 守卫放行后 Signed 自动交易闭环。"""
 
     from roll.binance_client import BinanceClientConfig, BinanceCoinMClient, InsufficientMonitorableSymbolsError
     from roll.logger import get_logger
@@ -366,7 +366,7 @@ def _cmd_run_loop(project_root: Path, argv: list[str]) -> int:
         prog="python -m main run-loop",
         description=(
             "多候选扫描 → 趋势评分 → 风控择优 → 默认 dry-run；"
-            "加 --no-dry-run（仅官方 Futures Testnet）则 Signed 闭环自动交易（需密钥文件或 BINANCE_*）。"
+            "加 --no-dry-run 则在 environment 与 REST host、策略安全开关均满足时 Signed 闭环自动交易（需密钥）。"
         ),
     )
     ap.add_argument(
@@ -391,8 +391,8 @@ def _cmd_run_loop(project_root: Path, argv: list[str]) -> int:
         "--no-dry-run",
         action="store_true",
         help=(
-            "COIN-M Futures **Testnet** 自动下单（binance.rest_base 须为官方 Testnet）；"
-            "需 --secrets-file / secrets.file / BINANCE_*，且 settings.strategy.testnet_signed_orders_enabled=true。"
+            "COIN-M signed 自动下单：environment=testnet 须 Testnet host + testnet_signed_orders_enabled；"
+            "environment=live 须 https://dapi.binance.com + live_trading_enabled；均需密钥。"
         ),
     )
     ap.add_argument(
@@ -405,11 +405,6 @@ def _cmd_run_loop(project_root: Path, argv: list[str]) -> int:
     settings = _load_settings_yaml(cfg_path)
     if not settings:
         print(f"[run-loop] 配置不存在或为空: {cfg_path}", file=sys.stderr)
-        return 2
-
-    env_raw = str(settings.get("environment", "testnet") or "").strip().lower()
-    if env_raw not in {"", "testnet"} and args_loop.no_dry_run:
-        print("[run-loop] --no-dry-run 仅在 environment=testnet（或未设置）时使用。", file=sys.stderr)
         return 2
 
     _apply_logging_from_settings(settings)
@@ -438,24 +433,23 @@ def _cmd_run_loop(project_root: Path, argv: list[str]) -> int:
     pm_for_live = None
     store_live = None
 
+    signed_environment = ""
     if args_loop.no_dry_run:
-        from roll.binance_client import BinanceCoinMSignedClient, is_binance_coin_m_testnet_url
+        from roll.binance_client import BinanceCoinMSignedClient
         from roll.position_manager import PositionManager
         from roll.position_manager import reconcile_coin_m_account
+        from roll.signed_guard import SignedTradingGuardError, assert_signed_trading_allowed
 
-        if not is_binance_coin_m_testnet_url(rest_base_signed):
-            print(
-                f"[run-loop] --no-dry-run 被拒绝：binance.rest_base={rest_base_signed!r} 非 Futures Testnet host。"
-                " 本仓库当前仅实现 Testnet signed 闭环；实盘 REST 即使设置 strategy.live_trading_enabled=true 也不会在此命令下下单。",
-                file=sys.stderr,
+        try:
+            signed_environment = assert_signed_trading_allowed(
+                environment=str(settings.get("environment", "testnet")),
+                rest_base=rest_base_signed,
+                testnet_signed_orders_enabled=params.testnet_signed_orders_enabled,
+                live_trading_enabled=params.live_trading_enabled,
+                command_label="run-loop",
             )
-            return 2
-        if not params.testnet_signed_orders_enabled:
-            print(
-                "[run-loop] Testnet 真实下单被拒绝：strategy.testnet_signed_orders_enabled 默认为 false。"
-                " 若确认在 Testnet 上自动挂单，请在该字段显式设为 true。",
-                file=sys.stderr,
-            )
+        except SignedTradingGuardError as exc:
+            print(str(exc), file=sys.stderr)
             return 2
         from roll.secrets import SecretsError, load_binance_credentials
 
@@ -528,8 +522,9 @@ def _cmd_run_loop(project_root: Path, argv: list[str]) -> int:
     )
 
     log.info(
-        "run-loop start dry_run=%s signed_rest_base=%s public_rest_base=%s once=%s",
+        "run-loop start dry_run=%s environment=%s signed_rest_base=%s public_rest_base=%s once=%s",
         dry_run,
+        signed_environment or str(settings.get("environment", "testnet")),
         rest_base_signed,
         rest_public,
         args_loop.once,
@@ -721,7 +716,8 @@ def main(argv: list[str] | None = None) -> int:
     log.info(
         "Testnet signed 主循环（须 strategy.testnet_signed_orders_enabled=true）："
         "`python -m main reconcile-state --secrets-file config/secrets/testnet.env` 对账后 "
-        "`python -m main run-loop --no-dry-run --secrets-file config/secrets/testnet.env`（仅官方 Testnet REST）。",
+        "`python -m main run-loop --no-dry-run --secrets-file config/secrets/testnet.env`（Testnet）；"
+        "live 须 environment=live、rest_base=https://dapi.binance.com、live_trading_enabled=true。",
     )
     log.info(
         "策略 dry-run 主循环：`python -m main run-loop --once`（默认公有 REST，不下单）。"
