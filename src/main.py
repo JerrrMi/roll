@@ -205,6 +205,82 @@ def _apply_logging_from_settings(settings: dict) -> None:
     logging.getLogger().setLevel(level)
 
 
+def _cmd_symbol_availability(project_root: Path, argv: list[str]) -> int:
+    """列出配置候选资产在 USD-M exchangeInfo 上的可监测映射。"""
+    import argparse
+
+    from roll.binance_config import BinanceConfigError, parse_binance_settings
+    from roll.binance_client import (
+        BinanceUsdmClient,
+        InsufficientMonitorableSymbolsError,
+        select_monitorable_usdm_symbols,
+    )
+    from roll.market_data import parse_candidate_assets
+    from roll.strategy_loop import parse_strategy_loop_params
+
+    ap = argparse.ArgumentParser(
+        prog="python -m main symbol-availability",
+        description=(
+            "从 USD-M /fapi/v1/exchangeInfo 动态映射 candidates → USDT 永续 symbol；"
+            "仅保留 quote=USDT、margin=USDT、PERPETUAL、TRADING。"
+        ),
+    )
+    ap.add_argument(
+        "--config",
+        type=Path,
+        default=project_root / "config/settings.yaml",
+        help="读取 candidates / strategy.min_monitor_symbols / binance REST",
+    )
+    ap.add_argument(
+        "--public-rest",
+        type=str,
+        default=None,
+        help="公共 REST base（默认 binance.rest_base；可设 strategy.public_rest_base 或 https://fapi.binance.com）",
+    )
+    ap.add_argument("--min-symbols", type=int, default=None, help="覆盖 strategy.min_monitor_symbols")
+    args_sa = ap.parse_args(argv)
+
+    cfg_path = _resolve_cfg_path(Path(args_sa.config), project_root)
+    settings = _load_settings_yaml(cfg_path)
+    if not settings:
+        print(f"[symbol-availability] 配置不存在或为空: {cfg_path}", file=sys.stderr)
+        return 2
+
+    strat = parse_strategy_loop_params(settings)
+    min_sy = args_sa.min_symbols if args_sa.min_symbols is not None else strat.min_monitor_symbols
+
+    pub = None
+    if isinstance(args_sa.public_rest, str) and args_sa.public_rest.strip():
+        pub = args_sa.public_rest.strip()
+    elif isinstance(strat.public_rest_base, str) and strat.public_rest_base.strip():
+        pub = strat.public_rest_base.strip()
+
+    try:
+        bcfg = parse_binance_settings(settings)
+    except BinanceConfigError as exc:
+        print(f"[symbol-availability] {exc}", file=sys.stderr)
+        return 2
+
+    rest = (pub or bcfg.rest_base).rstrip("/")
+    client = BinanceUsdmClient(bcfg.to_client_config(rest_base=rest))
+    client.ping()
+    client.sync_server_time()
+
+    candidates = parse_candidate_assets(dict(settings))
+    specs_full = client.list_usdm_specs()
+    print(f"[symbol-availability] rest_base={rest} api_prefix={bcfg.api_prefix} offset_ms={client.server_offset_ms}")
+    print(f"[symbol-availability] candidates={candidates} min_monitor_symbols={min_sy}")
+    try:
+        matched, report = select_monitorable_usdm_symbols(specs_full, candidates, min_count=min_sy)
+    except InsufficientMonitorableSymbolsError as exc:
+        print(f"[symbol-availability] 可监测标的不足:\n{exc.report.format_human_readable()}", file=sys.stderr)
+        return 3
+
+    print(report.format_human_readable())
+    print(f"[symbol-availability] OK matched={[s.symbol for s in matched]}")
+    return 0
+
+
 def _cmd_backtest(project_root: Path, argv: list[str]) -> int:
     import argparse
     import time
@@ -222,9 +298,9 @@ def _cmd_backtest(project_root: Path, argv: list[str]) -> int:
     )
     from roll.binance_config import BinanceConfigError, parse_binance_settings
     from roll.binance_client import (
-        BinanceCoinMClient,
+        BinanceUsdmClient,
         InsufficientMonitorableSymbolsError,
-        select_monitorable_coin_m_symbols,
+        select_monitorable_usdm_symbols,
     )
     from roll.market_data import parse_candidate_assets
     from roll.risk import RiskLimits
@@ -286,15 +362,15 @@ def _cmd_backtest(project_root: Path, argv: list[str]) -> int:
         print(f"[backtest] {exc}", file=sys.stderr)
         return 2
 
-    client = BinanceCoinMClient(
+    client = BinanceUsdmClient(
         bcfg.to_client_config(rest_base=pub.rstrip("/")),
     )
     client.sync_server_time()
 
     candidates = parse_candidate_assets(dict(settings))
-    specs_full = client.list_coin_m_specs()
+    specs_full = client.list_usdm_specs()
     try:
-        matched, report = select_monitorable_coin_m_symbols(specs_full, candidates, min_count=min_sy)
+        matched, report = select_monitorable_usdm_symbols(specs_full, candidates, min_count=min_sy)
     except InsufficientMonitorableSymbolsError as e:
         print(f"[backtest] 可监测标的不足:\n{e.report.format_human_readable()}", file=sys.stderr)
         return 3
@@ -363,7 +439,7 @@ def _cmd_run_loop(project_root: Path, argv: list[str]) -> int:
     """策略主循环：默认 dry-run；`--no-dry-run` 在 environment-aware 守卫放行后 Signed 自动交易闭环。"""
 
     from roll.binance_config import BinanceConfigError, parse_binance_settings
-    from roll.binance_client import BinanceCoinMClient, InsufficientMonitorableSymbolsError
+    from roll.binance_client import BinanceUsdmClient, InsufficientMonitorableSymbolsError
     from roll.logger import get_logger
     from roll.strategy_loop import (
         parse_strategy_loop_params,
@@ -530,7 +606,7 @@ def _cmd_run_loop(project_root: Path, argv: list[str]) -> int:
                 reconcile_outcome.halt_reason,
             )
 
-    client = BinanceCoinMClient(
+    client = BinanceUsdmClient(
         bcfg.to_client_config(rest_base=rest_public),
     )
 
@@ -722,6 +798,9 @@ def main(argv: list[str] | None = None) -> int:
     if argv[:1] == ["trend-offline"]:
         return _cmd_trend_offline(project_root, argv[1:])
 
+    if argv[:1] == ["symbol-availability"]:
+        return _cmd_symbol_availability(project_root, argv[1:])
+
     if argv[:1] == ["backtest"]:
         return _cmd_backtest(project_root, argv[1:])
 
@@ -780,6 +859,7 @@ def main(argv: list[str] | None = None) -> int:
         "策略 dry-run 主循环：`python -m main run-loop --once`（默认公有 REST，不下单）。"
     )
     log.info("历史回测与参数校准：`conda activate roll-env` 后 `python -m main backtest --days 180`")
+    log.info("候选映射验收：`python -m main symbol-availability`（或 `--public-rest https://fapi.binance.com`）")
     log.info("运行 `python -m main trend-offline --symbol DOGEUSDT` 可离线验收趋势模型。")
     log.info(
         "Testnet Signed 验收："

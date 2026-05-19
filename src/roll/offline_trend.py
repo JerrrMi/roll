@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from roll.binance_client import BinanceClientConfig, BinanceCoinMClient
+from roll.binance_client import BinanceClientConfig, BinanceUsdmClient
 from roll.binance_config import parse_binance_settings
 from roll.trend_model import Candle, TrendModel, TrendModelParams, TrendSignal, parse_binance_klines
 
@@ -20,7 +20,7 @@ def evaluate_symbol_offline_public(
 ) -> TrendSignal:
     """仅使用公共 REST：`GET /klines`，适合历史样本验收。"""
     m = model or TrendModel()
-    cli = BinanceCoinMClient(
+    cli = BinanceUsdmClient(
         BinanceClientConfig(rest_base=rest_base, api_prefix=api_prefix),
     )
 

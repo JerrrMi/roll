@@ -63,14 +63,14 @@ class InsufficientMonitorableSymbolsError(RuntimeError):
 
 
 @dataclass(frozen=True)
-class CoinMFuturesSymbol:
-    """从 exchangeInfo.symbols[] 解析出的 COIN-M 合约视图（永续/交割共用结构）。"""
+class UsdMFuturesSymbol:
+    """从 USD-M exchangeInfo.symbols[] 解析出的 USDT 永续合约规则视图。"""
 
     symbol: str
     pair: str
     base_asset: str
     quote_asset: str
-    contract_status: str
+    status: str
     contract_type: str
     margin_asset: str
     price_precision: int
@@ -81,13 +81,23 @@ class CoinMFuturesSymbol:
     min_qty: str
     market_min_qty: str
     market_step_size: str
+    min_notional: str
     filters_raw: tuple[Mapping[str, Any], ...] = field(repr=False)
+
+    @property
+    def contract_status(self) -> str:
+        """兼容旧字段名 contractStatus / contract_status。"""
+        return self.status
+
+
+# 历史别名（2.0 COIN-M 命名保留，3.0 语义为 USD-M）
+CoinMFuturesSymbol = UsdMFuturesSymbol
 
 
 @dataclass(frozen=True)
 class CandidateSymbolRow:
     candidate: str
-    matched: CoinMFuturesSymbol | None
+    matched: UsdMFuturesSymbol | None
     reason: str | None
 
 
@@ -95,7 +105,7 @@ class CandidateSymbolRow:
 class SymbolAvailabilityReport:
     candidates: tuple[str, ...]
     rows: tuple[CandidateSymbolRow, ...]
-    matched: tuple[CoinMFuturesSymbol, ...]
+    matched: tuple[UsdMFuturesSymbol, ...]
 
     def format_human_readable(self) -> str:
         lines: list[str] = []
@@ -104,14 +114,15 @@ class SymbolAvailabilityReport:
                 s = row.matched
                 lines.append(
                     f"  {row.candidate}: OK -> {s.symbol} "
-                    f"({s.contract_type}, {s.contract_status})"
+                    f"(base={s.base_asset}, {s.contract_type}, status={s.status}, "
+                    f"quote={s.quote_asset}, margin={s.margin_asset})"
                 )
             else:
                 lines.append(f"  {row.candidate}: unavailable - {row.reason}")
         lines.append("")
         lines.append(
             f"Matched {len(self.matched)} / {len(self.candidates)} candidates "
-            f"(order preserved)."
+            f"(order preserved; requires USDT/USDT PERPETUAL TRADING)."
         )
         return "\n".join(lines)
 
@@ -260,12 +271,32 @@ def _filter_dict(filters: list[Mapping[str, Any]], filter_type: str) -> Mapping[
     return None
 
 
-def parse_coin_m_specs_from_exchange_info(exchange_info: Mapping[str, Any]) -> list[CoinMFuturesSymbol]:
-    """解析 GET /dapi/v1/exchangeInfo 响应中的 symbols 列表。"""
+def _parse_exchange_status(row: Mapping[str, Any]) -> str:
+    """USD-M 使用 status；COIN-M 历史响应可能为 contractStatus。"""
+    st = row.get("status")
+    if isinstance(st, str) and st:
+        return st
+    cs = row.get("contractStatus")
+    if isinstance(cs, str):
+        return cs
+    return ""
+
+
+def _parse_min_notional(filters: Sequence[Mapping[str, Any]]) -> str:
+    mn = _filter_dict(list(filters), "MIN_NOTIONAL") or {}
+    for key in ("notional", "minNotional"):
+        val = mn.get(key)
+        if val is not None and str(val).strip():
+            return str(val)
+    return ""
+
+
+def parse_usdm_specs_from_exchange_info(exchange_info: Mapping[str, Any]) -> list[UsdMFuturesSymbol]:
+    """解析 GET /fapi/v1/exchangeInfo 响应中的 symbols 列表。"""
     symbols_raw = exchange_info.get("symbols")
     if not isinstance(symbols_raw, list):
         return []
-    out: list[CoinMFuturesSymbol] = []
+    out: list[UsdMFuturesSymbol] = []
     for row in symbols_raw:
         if not isinstance(row, Mapping):
             continue
@@ -276,11 +307,14 @@ def parse_coin_m_specs_from_exchange_info(exchange_info: Mapping[str, Any]) -> l
         lot = _filter_dict(filters, "LOT_SIZE") or {}
         mlot = _filter_dict(filters, "MARKET_LOT_SIZE") or {}
 
-        contract_size_raw = row.get("contractSize", 0)
-        try:
-            contract_size_f = float(contract_size_raw)
-        except (TypeError, ValueError):
-            contract_size_f = 0.0
+        contract_size_raw = row.get("contractSize")
+        if contract_size_raw is None:
+            contract_size_f = 1.0
+        else:
+            try:
+                contract_size_f = float(contract_size_raw)
+            except (TypeError, ValueError):
+                contract_size_f = 1.0
 
         pp = row.get("pricePrecision")
         qp = row.get("quantityPrecision")
@@ -294,12 +328,12 @@ def parse_coin_m_specs_from_exchange_info(exchange_info: Mapping[str, Any]) -> l
             qty_prec = 0
 
         out.append(
-            CoinMFuturesSymbol(
+            UsdMFuturesSymbol(
                 symbol=str(row.get("symbol", "")),
                 pair=str(row.get("pair", "")),
                 base_asset=str(row.get("baseAsset", "")),
                 quote_asset=str(row.get("quoteAsset", "")),
-                contract_status=str(row.get("contractStatus", "")),
+                status=_parse_exchange_status(row),
                 contract_type=str(row.get("contractType", "")),
                 margin_asset=str(row.get("marginAsset", "")),
                 price_precision=price_prec,
@@ -310,37 +344,72 @@ def parse_coin_m_specs_from_exchange_info(exchange_info: Mapping[str, Any]) -> l
                 min_qty=str(lot.get("minQty", "")),
                 market_min_qty=str(mlot.get("minQty", "")),
                 market_step_size=str(mlot.get("stepSize", "")),
+                min_notional=_parse_min_notional(filters),
                 filters_raw=tuple(filters),
             )
         )
     return out
 
 
-def select_monitorable_coin_m_symbols(
-    specs: Sequence[CoinMFuturesSymbol],
+def parse_coin_m_specs_from_exchange_info(exchange_info: Mapping[str, Any]) -> list[UsdMFuturesSymbol]:
+    """历史别名：同 `parse_usdm_specs_from_exchange_info`。"""
+    return parse_usdm_specs_from_exchange_info(exchange_info)
+
+
+def _is_usdt_perpetual_trading(
+    spec: UsdMFuturesSymbol,
+    *,
+    required_quote_asset: str = "USDT",
+    required_margin_asset: str = "USDT",
+    allowed_contract_types: frozenset[str] | None = None,
+    required_status: str = "TRADING",
+) -> bool:
+    if allowed_contract_types is None:
+        allowed_contract_types = frozenset({"PERPETUAL"})
+    return (
+        spec.quote_asset == required_quote_asset
+        and spec.margin_asset == required_margin_asset
+        and spec.contract_type in allowed_contract_types
+        and spec.status == required_status
+    )
+
+
+def select_monitorable_usdm_symbols(
+    specs: Sequence[UsdMFuturesSymbol],
     candidates: Sequence[str],
     *,
     min_count: int = 3,
+    required_quote_asset: str = "USDT",
+    required_margin_asset: str = "USDT",
     allowed_contract_types: frozenset[str] | None = None,
-    required_contract_status: str = "TRADING",
-) -> tuple[list[CoinMFuturesSymbol], SymbolAvailabilityReport]:
-    """按候选资产（精确匹配 baseAsset）筛选可监测合约。
+    required_status: str = "TRADING",
+) -> tuple[list[UsdMFuturesSymbol], SymbolAvailabilityReport]:
+    """按候选资产（精确匹配 baseAsset）筛选可监测 USD-M USDT 永续合约。
 
-    不按名称猜测（例如 SHIB vs 1000SHIB）；交易所需用 exchange 返回的 baseAsset 作为配置项。
+    只保留 quoteAsset=USDT、marginAsset=USDT、contractType=PERPETUAL、status=TRADING。
+    不按名称猜测（例如 SHIB vs 1000SHIB）；配置须与 exchangeInfo.baseAsset 完全一致。
     """
     if allowed_contract_types is None:
         allowed_contract_types = frozenset({"PERPETUAL"})
 
-    by_base: dict[str, CoinMFuturesSymbol] = {}
+    by_base: dict[str, UsdMFuturesSymbol] = {}
     for s in specs:
         if not s.base_asset:
+            continue
+        if not _is_usdt_perpetual_trading(
+            s,
+            required_quote_asset=required_quote_asset,
+            required_margin_asset=required_margin_asset,
+            allowed_contract_types=allowed_contract_types,
+            required_status=required_status,
+        ):
             continue
         if s.base_asset not in by_base:
             by_base[s.base_asset] = s
 
     norm_candidates = tuple(str(c).strip().upper() for c in candidates if str(c).strip())
     rows: list[CandidateSymbolRow] = []
-    matched: list[CoinMFuturesSymbol] = []
+    matched: list[UsdMFuturesSymbol] = []
 
     for cand in norm_candidates:
         spec = by_base.get(cand)
@@ -350,28 +419,9 @@ def select_monitorable_coin_m_symbols(
                     candidate=cand,
                     matched=None,
                     reason=(
-                        "no symbol with this baseAsset on exchangeInfo "
-                        "(if the venue lists 1000SHIB etc., put that exact code in candidates)"
+                        "no USDT perpetual TRADING symbol with this baseAsset on exchangeInfo "
+                        "(if the venue lists 1000SHIB etc., put that exact baseAsset in candidates)"
                     ),
-                )
-            )
-            continue
-        reasons: list[str] = []
-        if spec.contract_status != required_contract_status:
-            reasons.append(
-                f"contractStatus={spec.contract_status!r} (need {required_contract_status!r})"
-            )
-        if spec.contract_type not in allowed_contract_types:
-            reasons.append(
-                f"contractType={spec.contract_type!r} "
-                f"(allowed: {sorted(allowed_contract_types)})"
-            )
-        if reasons:
-            rows.append(
-                CandidateSymbolRow(
-                    candidate=cand,
-                    matched=None,
-                    reason="; ".join(reasons),
                 )
             )
             continue
@@ -385,7 +435,7 @@ def select_monitorable_coin_m_symbols(
     )
     if len(matched) < min_count:
         msg = (
-            f"Need at least {min_count} monitorable COIN-M symbols for candidates "
+            f"Need at least {min_count} monitorable USD-M USDT perpetual symbols for candidates "
             f"{list(norm_candidates)}, got {len(matched)}.\n"
             f"{report.format_human_readable()}"
         )
@@ -393,8 +443,26 @@ def select_monitorable_coin_m_symbols(
     return matched, report
 
 
-class BinanceCoinMClient:
-    """USD-M Futures 公共 REST 封装（默认连 Testnet；类名历史保留）。"""
+def select_monitorable_coin_m_symbols(
+    specs: Sequence[UsdMFuturesSymbol],
+    candidates: Sequence[str],
+    *,
+    min_count: int = 3,
+    allowed_contract_types: frozenset[str] | None = None,
+    required_contract_status: str = "TRADING",
+) -> tuple[list[UsdMFuturesSymbol], SymbolAvailabilityReport]:
+    """历史别名：同 `select_monitorable_usdm_symbols`（USD-M USDT 永续筛选）。"""
+    return select_monitorable_usdm_symbols(
+        specs,
+        candidates,
+        min_count=min_count,
+        allowed_contract_types=allowed_contract_types,
+        required_status=required_contract_status,
+    )
+
+
+class BinanceUsdmClient:
+    """Binance USD-M Futures 公共 REST 封装（/fapi/v1；默认连 Testnet）。"""
 
     def __init__(self, config: BinanceClientConfig | None = None) -> None:
         self._config = config or BinanceClientConfig()
@@ -521,9 +589,13 @@ class BinanceCoinMClient:
             raise BinanceHTTPError(f"unexpected exchangeInfo payload: {type(data)}")
         return dict(data)
 
-    def list_coin_m_specs(self) -> list[CoinMFuturesSymbol]:
-        """exchangeInfo + 字段解析。"""
-        return parse_coin_m_specs_from_exchange_info(self.exchange_info())
+    def list_usdm_specs(self) -> list[UsdMFuturesSymbol]:
+        """exchangeInfo + USD-M 字段解析。"""
+        return parse_usdm_specs_from_exchange_info(self.exchange_info())
+
+    def list_coin_m_specs(self) -> list[UsdMFuturesSymbol]:
+        """历史别名：同 list_usdm_specs。"""
+        return self.list_usdm_specs()
 
     def klines(
         self,
@@ -564,13 +636,17 @@ class BinanceCoinMClient:
             return out
         raise BinanceHTTPError(f"unexpected ticker/price payload: {type(data)}")
 
-    def get_coin_m_spec(self, symbol: str) -> CoinMFuturesSymbol | None:
+    def get_usdm_spec(self, symbol: str) -> UsdMFuturesSymbol | None:
         """exchangeInfo 中按 symbol（如 DOGEUSDT）精确查找。"""
         want = symbol.strip().upper()
-        for spec in self.list_coin_m_specs():
+        for spec in self.list_usdm_specs():
             if spec.symbol.upper() == want:
                 return spec
         return None
+
+    def get_coin_m_spec(self, symbol: str) -> UsdMFuturesSymbol | None:
+        """历史别名：同 get_usdm_spec。"""
+        return self.get_usdm_spec(symbol)
 
     def min_marketable_quantity_string(self, symbol: str, *, prefer_market: bool = True) -> str:
         """返回按 LOT / MARKET_LOT_SIZE step 格式化后的最小可交易数量（字符串 DECIMAL）。"""
@@ -585,7 +661,11 @@ class BinanceCoinMClient:
         return format_floor_to_step_decimal_str(min_raw, step_raw)
 
 
-class BinanceCoinMSignedClient(BinanceCoinMClient):
+# 历史别名
+BinanceCoinMClient = BinanceUsdmClient
+
+
+class BinanceCoinMSignedClient(BinanceUsdmClient):
     """Binance USD-M Futures Signed REST（`/fapi/v1`；类名历史保留）。
 
     - 必选配置：`BinanceClientConfig.api_key`、`api_secret`（不得写入日志）。

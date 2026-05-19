@@ -1,4 +1,4 @@
-"""COIN-M public client：exchangeInfo 解析、候选筛选、时间偏移（mock）。"""
+"""USD-M public client：exchangeInfo 解析、候选筛选、时间偏移（mock）。"""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import pytest
 
 from roll.binance_client import (
     BinanceClientConfig,
-    BinanceCoinMClient,
+    BinanceUsdmClient,
     BinanceCoinMSignedClient,
     BinanceSignerError,
     InsufficientMonitorableSymbolsError,
@@ -17,107 +17,132 @@ from roll.binance_client import (
     format_floor_to_step_decimal_str,
     is_binance_futures_testnet_url,
     is_binance_usdm_live_url,
-    parse_coin_m_specs_from_exchange_info,
+    parse_usdm_specs_from_exchange_info,
     redact_signed_query_url,
-    select_monitorable_coin_m_symbols,
+    select_monitorable_usdm_symbols,
 )
 
 
-def _sample_symbol(
+def _sample_usdm_symbol(
     *,
     symbol: str,
     base: str,
     status: str = "TRADING",
     ctype: str = "PERPETUAL",
-    tick: str = "0.1",
+    quote: str = "USDT",
+    margin: str = "USDT",
+    tick: str = "0.01",
     min_q: str = "1",
     step: str = "1",
+    min_notional: str = "5",
 ) -> dict:
     return {
         "symbol": symbol,
-        "pair": base + "USD",
+        "pair": symbol,
         "contractType": ctype,
         "deliveryDate": 4133404800000,
         "onboardDate": 1596006000000,
-        "contractStatus": status,
-        "contractSize": 10,
-        "marginAsset": base,
-        "quoteAsset": "USD",
+        "status": status,
         "baseAsset": base,
-        "pricePrecision": 1,
+        "quoteAsset": quote,
+        "marginAsset": margin,
+        "pricePrecision": 2,
         "quantityPrecision": 0,
-        "equalQtyPrecision": 4,
         "filters": [
-            {"filterType": "PRICE_FILTER", "tickSize": tick, "minPrice": "1", "maxPrice": "9"},
-            {"filterType": "LOT_SIZE", "minQty": min_q, "maxQty": "999", "stepSize": step},
-            {"filterType": "MARKET_LOT_SIZE", "minQty": min_q, "maxQty": "99", "stepSize": step},
+            {"filterType": "PRICE_FILTER", "tickSize": tick, "minPrice": "0.01", "maxPrice": "999999"},
+            {"filterType": "LOT_SIZE", "minQty": min_q, "maxQty": "999999", "stepSize": step},
+            {"filterType": "MARKET_LOT_SIZE", "minQty": min_q, "maxQty": "99999", "stepSize": step},
+            {"filterType": "MIN_NOTIONAL", "notional": min_notional},
         ],
     }
 
 
-def test_parse_exchange_info_extracts_precision_and_filters() -> None:
-    raw = {"timezone": "UTC", "symbols": [_sample_symbol(symbol="BTCUSD_PERP", base="BTC")]}
-    specs = parse_coin_m_specs_from_exchange_info(raw)
+def test_parse_exchange_info_extracts_precision_filters_and_min_notional() -> None:
+    raw = {"timezone": "UTC", "symbols": [_sample_usdm_symbol(symbol="BTCUSDT", base="BTC")]}
+    specs = parse_usdm_specs_from_exchange_info(raw)
     assert len(specs) == 1
     s = specs[0]
-    assert s.symbol == "BTCUSD_PERP"
+    assert s.symbol == "BTCUSDT"
     assert s.base_asset == "BTC"
-    assert s.contract_status == "TRADING"
+    assert s.quote_asset == "USDT"
+    assert s.margin_asset == "USDT"
+    assert s.status == "TRADING"
     assert s.contract_type == "PERPETUAL"
-    assert s.tick_size == "0.1"
+    assert s.contract_size == 1.0
+    assert s.tick_size == "0.01"
     assert s.min_qty == "1"
     assert s.step_size == "1"
+    assert s.min_notional == "5"
 
 
-def test_select_requires_three_defaults_perpetual_trading() -> None:
+def test_select_requires_three_usdt_perpetual_trading() -> None:
     raw = {
         "symbols": [
-            _sample_symbol(symbol="AAAUSD_PERP", base="AAA"),
-            _sample_symbol(symbol="BBBUSD_PERP", base="BBB"),
-            _sample_symbol(symbol="CCCUSD_PERP", base="CCC"),
+            _sample_usdm_symbol(symbol="AAAUSDT", base="AAA"),
+            _sample_usdm_symbol(symbol="BBBUSDT", base="BBB"),
+            _sample_usdm_symbol(symbol="CCCUSDT", base="CCC"),
         ]
     }
-    specs = parse_coin_m_specs_from_exchange_info(raw)
-    matched, report = select_monitorable_coin_m_symbols(specs, ["AAA", "BBB", "CCC"])
-    assert [x.symbol for x in matched] == ["AAAUSD_PERP", "BBBUSD_PERP", "CCCUSD_PERP"]
+    specs = parse_usdm_specs_from_exchange_info(raw)
+    matched, report = select_monitorable_usdm_symbols(specs, ["AAA", "BBB", "CCC"])
+    assert [x.symbol for x in matched] == ["AAAUSDT", "BBBUSDT", "CCCUSDT"]
     assert len(report.matched) == 3
 
 
 def test_select_raises_below_min_with_reasons() -> None:
-    raw = {"symbols": [_sample_symbol(symbol="AAAUSD_PERP", base="AAA")]}
-    specs = parse_coin_m_specs_from_exchange_info(raw)
+    raw = {"symbols": [_sample_usdm_symbol(symbol="AAAUSDT", base="AAA")]}
+    specs = parse_usdm_specs_from_exchange_info(raw)
     with pytest.raises(InsufficientMonitorableSymbolsError) as ei:
-        select_monitorable_coin_m_symbols(specs, ["AAA", "BBB", "CCC"], min_count=3)
+        select_monitorable_usdm_symbols(specs, ["AAA", "BBB", "CCC"], min_count=3)
     assert "BBB" in str(ei.value)
     texts = [r.reason or "" for r in ei.value.report.rows]
     assert any("baseAsset" in t for t in texts)
 
 
-def test_select_skips_non_trading_or_wrong_contract_type() -> None:
+def test_select_skips_non_trading_or_non_usdt_perpetual() -> None:
     raw = {
         "symbols": [
-            _sample_symbol(symbol="AAAUSD_PERP", base="AAA"),
-            _sample_symbol(symbol="BBBUSD_PERP", base="BBB", status="HALT"),
-            _sample_symbol(symbol="CCCUSD_241227", base="CCC", ctype="CURRENT_QUARTER"),
-            _sample_symbol(symbol="DDDUSD_PERP", base="DDD"),
-            _sample_symbol(symbol="EEEUSD_PERP", base="EEE"),
+            _sample_usdm_symbol(symbol="AAAUSDT", base="AAA"),
+            _sample_usdm_symbol(symbol="BBBUSD_PERP", base="BBB", quote="USD", margin="BBB"),
+            _sample_usdm_symbol(symbol="CCCUSDT", base="CCC", status="HALT"),
+            _sample_usdm_symbol(symbol="DDDUSDT", base="DDD", ctype="CURRENT_QUARTER"),
+            _sample_usdm_symbol(symbol="EEEUSDT", base="EEE"),
         ]
     }
-    specs = parse_coin_m_specs_from_exchange_info(raw)
-    matched, _ = select_monitorable_coin_m_symbols(
+    specs = parse_usdm_specs_from_exchange_info(raw)
+    matched, _ = select_monitorable_usdm_symbols(
         specs,
         ["AAA", "BBB", "CCC", "DDD", "EEE"],
-        min_count=3,
-        allowed_contract_types=frozenset({"PERPETUAL"}),
+        min_count=2,
     )
     bases = [s.base_asset for s in matched]
-    assert bases == ["AAA", "DDD", "EEE"]
+    assert bases == ["AAA", "EEE"]
+
+
+def test_select_does_not_guess_1000shib_for_shib() -> None:
+    raw = {
+        "symbols": [
+            _sample_usdm_symbol(symbol="1000SHIBUSDT", base="1000SHIB"),
+            _sample_usdm_symbol(symbol="DOGEUSDT", base="DOGE"),
+            _sample_usdm_symbol(symbol="AVAXUSDT", base="AVAX"),
+            _sample_usdm_symbol(symbol="BTCUSDT", base="BTC"),
+        ]
+    }
+    specs = parse_usdm_specs_from_exchange_info(raw)
+    matched, report = select_monitorable_usdm_symbols(
+        specs,
+        ["SHIB", "1000SHIB", "DOGE", "AVAX", "BTC"],
+        min_count=3,
+    )
+    assert {s.base_asset for s in matched} == {"1000SHIB", "DOGE", "AVAX", "BTC"}
+    shib_row = next(r for r in report.rows if r.candidate == "SHIB")
+    assert shib_row.matched is None
 
 
 def test_sync_server_time_offset_cached() -> None:
     cfg = BinanceClientConfig(rest_base="https://example.invalid")
-    client = BinanceCoinMClient(cfg)
-    with patch.object(BinanceCoinMClient, "fetch_server_time_ms", return_value=7000):
+    client = BinanceUsdmClient(cfg)
+    with patch.object(BinanceUsdmClient, "fetch_server_time_ms", return_value=7000):
         with patch("roll.binance_client._millis_now", side_effect=[4000, 6000]):
             off = client.sync_server_time()
     assert off == 2000  # 7000 - (4000 + 6000) // 2

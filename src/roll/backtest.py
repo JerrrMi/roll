@@ -1,13 +1,13 @@
-"""历史回测：Binance COIN-M K 线、趋势模型、止损/追踪止损、手续费、滑点、单标的全局持仓。
+"""历史回测：Binance USD-M K 线、趋势模型、止损/追踪止损、手续费、滑点、单标的全局持仓。
 
-纯公有 REST；默认可用实盘 `dapi.binance.com` 拉 K 线（Testnet 历史往往较短）。"""
+纯公有 REST；默认可用实盘 `fapi.binance.com` 拉 K 线（Testnet 历史往往较短）。"""
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Mapping, Sequence
 
-from roll.binance_client import BinanceCoinMClient, CoinMFuturesSymbol
+from roll.binance_client import BinanceUsdmClient, UsdMFuturesSymbol
 from roll.coinm_auto_trade import desired_protective_stop_price, should_exit_from_trend
 from roll.risk import (
     KellyVariant,
@@ -66,7 +66,7 @@ def slice_closed(
 
 
 def fetch_klines_range(
-    client: BinanceCoinMClient,
+    client: BinanceUsdmClient,
     symbol: str,
     interval: str,
     start_ms: int,
@@ -360,8 +360,8 @@ def parse_risk_limits_settings(settings: Mapping[str, Any]) -> RiskLimits | None
 def run_backtest(
     *,
     settings: Mapping[str, Any],
-    client: BinanceCoinMClient,
-    matched: Sequence[CoinMFuturesSymbol],
+    client: BinanceUsdmClient,
+    matched: Sequence[UsdMFuturesSymbol],
     data: Mapping[str, Mapping[str, list[Candle]]],
     base_timeline: list[Candle],
     strat_params: StrategyLoopParams,
@@ -672,8 +672,8 @@ def build_aligned_timeline(
 
 
 def load_backtest_data(
-    client: BinanceCoinMClient,
-    matched: Sequence[CoinMFuturesSymbol],
+    client: BinanceUsdmClient,
+    matched: Sequence[UsdMFuturesSymbol],
     *,
     start_ms: int,
     end_ms: int,
@@ -708,8 +708,8 @@ DEFAULT_SENSITIVITY_GRID: dict[str, tuple[float, ...]] = {
 def run_parameter_sensitivity(
     *,
     settings: Mapping[str, Any],
-    client: BinanceCoinMClient,
-    matched: Sequence[CoinMFuturesSymbol],
+    client: BinanceUsdmClient,
+    matched: Sequence[UsdMFuturesSymbol],
     data: Mapping[str, Mapping[str, list[Candle]]],
     base_timeline: list[Candle],
     strat_params: StrategyLoopParams,

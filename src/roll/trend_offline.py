@@ -1,4 +1,4 @@
-"""离线趋势评估工具：仅从 Binance COIN-M 公共接口拉历史 K 线并运行 TrendModel。
+"""离线趋势评估工具：仅从 Binance USD-M 公共接口拉历史 K 线并运行 TrendModel。
 
 不发送订单、不涉及签名私有接口。
 """
@@ -8,7 +8,7 @@ from __future__ import annotations
 import argparse
 from typing import Mapping, Sequence
 
-from roll.binance_client import BinanceClientConfig, BinanceCoinMClient
+from roll.binance_client import BinanceClientConfig, BinanceUsdmClient
 from roll.trend_model import Candle, TrendModel, TrendModelParams, parse_binance_klines
 
 
@@ -16,7 +16,7 @@ DEFAULT_LIMIT_PER_TF = 500
 
 
 def load_klines_three_tf(
-    client: BinanceCoinMClient,
+    client: BinanceUsdmClient,
     symbol: str,
     *,
     limit: int = DEFAULT_LIMIT_PER_TF,
@@ -42,7 +42,7 @@ def run_public_offline_evaluation(
         cfg_kw["rest_base"] = rest_base
     if api_prefix:
         cfg_kw["api_prefix"] = api_prefix
-    client = BinanceCoinMClient(BinanceClientConfig(**cfg_kw))
+    client = BinanceUsdmClient(BinanceClientConfig(**cfg_kw))
 
     bundles = load_klines_three_tf(client, symbol, limit=int(limit))
     model = TrendModel(params)
@@ -67,7 +67,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--rest-base",
         type=str,
         default=None,
-        help="REST 根域名，省略则沿用 BinanceCoinMClient 默认 Testnet",
+        help="REST 根域名，省略则沿用 BinanceUsdmClient 默认 Testnet",
     )
     p.add_argument(
         "--api-prefix",
