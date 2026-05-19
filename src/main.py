@@ -76,12 +76,13 @@ def _cmd_trend_offline(project_root: Path, argv: list[str]) -> int:
 def _cmd_coinm_signed_smoke(project_root: Path, argv: list[str]) -> int:
     import yaml
 
+    from roll.binance_config import BinanceConfigError, parse_binance_settings
     from roll.coinm_signed_testnet import run_signed_testnet_acceptance
 
     ap = argparse.ArgumentParser(
         prog="python -m main coinm-signed-smoke",
         description=(
-            "Binance COIN-M Futures **Testnet ONLY** Signed API 验收；"
+            "Binance USD-M Futures **Testnet ONLY** Signed API 验收（CLI 名历史保留）；"
             "API Key / Secret 从 --secrets-file、配置 secrets.file 或环境变量读取（禁止打印 Secret）。"
         ),
     )
