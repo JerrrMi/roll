@@ -1,5 +1,7 @@
 # 滚仓系统实现的 Plan 文档
 
+> **【历史文档 · COIN-M】** 本文档为 **1.0** 实现计划，面向 Binance **COIN-M 币本位** Futures。**当前系统标准已为 3.0 USD-M / U 本位 USDT 永续**，请勿按本文档的 `/dapi`、`dapi.binance.com` 或 COIN-M 网页操作配置或运维。请参阅 [`滚仓系统实现的plan文档3.0版本.md`](滚仓系统实现的plan文档3.0版本.md) 与根目录 `README.md`。
+>
 > 本文档基于 `docs/執行摘要.pdf`，用于指导后续在 Cursor 中分阶段实现一套精简、高效、专注 Binance COIN-M Futures API 的加密货币滚仓自动交易系统。本文档只描述实现计划、验收方式和使用方法，不包含代码。
 
 ## 1. 背景与目标

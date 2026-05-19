@@ -15,6 +15,13 @@ if grep -q "live_trading_enabled: true" config/settings.live.yaml 2>/dev/null; t
   echo "[acceptance] WARN: live_trading_enabled=true — 本脚本不会加 --no-dry-run，但仍请确认你理解 dry-run 与 signed 区别" >&2
 fi
 
+if grep -qE "dapi\.binance\.com|/dapi" config/settings.live.yaml 2>/dev/null; then
+  _roll_acceptance_die "settings.live.yaml 仍含 COIN-M 配置（dapi）；USD-M live 应使用 fapi.binance.com 与 /fapi/v1"
+fi
+if ! grep -q "fapi.binance.com" config/settings.live.yaml 2>/dev/null; then
+  _roll_acceptance_die "settings.live.yaml 的 rest_base 应指向 fapi.binance.com（USD-M live 公共行情）"
+fi
+
 UTC_NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo "$UTC_NOW" >"$STAMP_FILE"
 echo "[acceptance] dry-run 开始 UTC: $UTC_NOW"

@@ -1,6 +1,8 @@
-# Live 上线前最终验收与小资金试运行
+# Live 上线前最终验收与小资金试运行（USD-M / U 本位）
 
-本文档实现 2.0 Plan **Prompt 8**：在**不修改趋势策略模型**的前提下，提供可复制的命令、检查清单与记录模板。验收分五个阶段，**必须按顺序**完成；不得跳过 Testnet 闭环或 live 对账直接 signed 下单。
+本文档实现 **3.0 USD-M** 上线验收流程（继承 2.0 Prompt 8 的阶段划分）：在**不修改趋势策略模型**的前提下，提供可复制的命令、检查清单与记录模板。验收分五个阶段，**必须按顺序**完成；不得跳过 Testnet 闭环或 live 对账直接 signed 下单。
+
+**当前系统标准：** Binance **USD-M / U 本位 USDT 永续**（`product: usdm`，`/fapi/v1`）。网页操作请在 **U 本位合约 / USD-M Futures** 板块进行，**不是** COIN-M 币本位。
 
 **约定**
 
@@ -99,14 +101,14 @@ python -m main reconcile-state \
   --secrets-file config/secrets/testnet.env
 ```
 
-**可选补充验收**（最小 REST 闭环，不经过策略信号）：
+**可选补充验收**（最小 REST 闭环，不经过策略信号；CLI 名 `coinm-signed-smoke` 为历史保留，实际为 **USD-M Testnet**）：
 
 ```bash
 conda activate roll-env
 python -m main coinm-signed-smoke \
   --config config/settings.testnet.yaml \
   --secrets-file config/secrets/testnet.env \
-  --symbol DOGEUSD_PERP
+  --symbol DOGEUSDT
 ```
 
 ### 通过标准
@@ -116,10 +118,10 @@ python -m main coinm-signed-smoke \
 | 两次对账 `nonzero_position_symbols` | `[]` |
 | `symbols_with_open_orders` | `[]` |
 | `halt_automatic_trading` | `False` |
-| Testnet 网页 COIN-M | 仓位 0、无挂单 |
+| Testnet 网页 **U 本位 / USD-M** | 仓位 0、无挂单 |
 | 运行日志 | 出现过开仓与最终至空仓（策略平仓或本轮结束无持仓） |
 
-未通过：不要进入阶段 2。用 Testnet 网页撤单/平仓后重新对账。
+未通过：不要进入阶段 2。在 Testnet **U 本位合约 / USD-M Futures** 网页撤单/平仓后重新对账。
 
 ---
 
@@ -129,11 +131,11 @@ python -m main coinm-signed-smoke \
 
 ### 配置
 
-- `config/settings.live.yaml`：`environment: live`，`binance.rest_base: https://dapi.binance.com`。
+- `config/settings.live.yaml`：`environment: live`，`binance.product: usdm`，`binance.rest_base: https://fapi.binance.com`，`binance.api_prefix: /fapi/v1`。
 - **`strategy.live_trading_enabled` 保持 `false`**（直到阶段 4）。
 - 不要加 CLI `--no-dry-run`。
 
-live 配置下 dry-run 默认使用同一 `dapi.binance.com` 拉取 K 线与 exchangeInfo，满足「实盘公共行情」要求。
+live 配置下 dry-run 使用 `fapi.binance.com` 拉取 USD-M 实盘公共 K 线与 exchangeInfo，满足「实盘公共行情」要求。
 
 ### 启动连续观察
 
@@ -196,7 +198,7 @@ python -m main reconcile-state \
 | `halt_automatic_trading` | `False` |
 | `halt_reason` | `None` 或空字符串 |
 
-脚本退出码：`0` 通过；`1` 存在 halt 或非预期快照（须先人工清理，见 Plan 2.0 §8.4）。
+脚本退出码：`0` 通过；`1` 存在 halt 或非预期快照（须先人工清理，见 Plan 3.0 §11.7 或 [`docs/滚仓系统实现的plan文档3.0版本.md`](滚仓系统实现的plan文档3.0版本.md)）。
 
 **网页复核（强烈建议）：** Binance → 衍生品 → **U 本位合约 / USD-M Futures** → 仓位 0、当前委托为空。
 
@@ -284,7 +286,7 @@ journalctl -u roll-live -n 200 --no-pager
 
 停止：`sudo systemctl stop roll-live` → 立即 `phase3-live-reconcile.sh` → 网页复核。
 
-详见 [`deploy/systemd/README.md`](../deploy/systemd/README.md) 与 Plan 2.0 §8。
+详见 [`deploy/systemd/README.md`](../deploy/systemd/README.md) 与 Plan 3.0 §11.5–§11.7。
 
 ---
 
@@ -302,12 +304,13 @@ journalctl -u roll-live -n 200 --no-pager
 | 运维 | 值班人知晓停服、网页平仓、对账命令 |
 | 人工 | `record.md` 中「批准进入 systemd 常驻」已勾选 |
 
-若出现：`halt_automatic_trading=True`、对账与网页不一致、连续 API 失败、非预期开仓 — **不要** 常驻；`stop` 后按 §8.4 处理，修复后从阶段 3 重来。
+若出现：`halt_automatic_trading=True`、对账与网页不一致、连续 API 失败、非预期开仓 — **不要** 常驻；`stop` 后按 Plan 3.0 §11.7 在 **USD-M / U 本位** 网页处理，修复后从阶段 3 重来。
 
 ---
 
 ## 相关文档
 
-- 2.0 总计划：`docs/滚仓系统实现的plan文档2.0版本.md`（§9 检查清单、§8 应急运维）
-- 日常使用：`README.md`
-- systemd：`deploy/systemd/README.md`
+- **当前标准（3.0 USD-M）**：[`docs/滚仓系统实现的plan文档3.0版本.md`](滚仓系统实现的plan文档3.0版本.md)（§11 使用方法、§12 检查清单与应急）
+- 日常使用：[`README.md`](../README.md)
+- systemd：[`deploy/systemd/README.md`](../deploy/systemd/README.md)
+- **历史（COIN-M，勿用于当前配置）**：[`docs/滚仓系统实现的plan文档2.0版本.md`](滚仓系统实现的plan文档2.0版本.md)

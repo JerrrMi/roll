@@ -1,6 +1,8 @@
-# Ubuntu systemd 部署
+# Ubuntu systemd 部署（USD-M / U 本位）
 
 策略进程由 systemd 托管，在**项目根目录**（`WorkingDirectory`）运行，使用 **roll-env** 中的 Python，并加载对应环境的密钥与配置。
+
+**当前系统标准：** Binance **USD-M / U 本位 USDT 永续**。live 配置须为 `product: usdm`、`rest_base: https://fapi.binance.com`、`api_prefix: /fapi/v1`。Testnet 为同一 Testnet host + `/fapi/v1`。**勿**使用 COIN-M 的 `dapi.binance.com` 或 `/dapi`。
 
 ## 文件位置
 
@@ -21,10 +23,10 @@ conda activate roll-env
 pip install -e ".[dev]"
 ```
 
-确认本地配置与密钥已就绪（见项目根目录 `README.md`）：
+确认本地配置与密钥已就绪（见项目根目录 [`README.md`](../../README.md)）：
 
-- Testnet：`config/settings.testnet.yaml`、`config/secrets/testnet.env`
-- live：`config/settings.live.yaml`、`config/secrets/live.env`（且 `live_trading_enabled: true` 等闸门已满足）
+- Testnet：`config/settings.testnet.yaml`（`product: usdm`，Testnet host + `/fapi/v1`）、`config/secrets/testnet.env`
+- live：`config/settings.live.yaml`（`rest_base: https://fapi.binance.com`）、`config/secrets/live.env`（且 `live_trading_enabled: true` 等闸门已满足）
 
 ```bash
 chmod 700 config/secrets
@@ -108,7 +110,7 @@ python -m main reconcile-state \
 | 取消开机自启 | `sudo systemctl disable roll-testnet` |
 | **live 开机自启（默认不做）** | 仅在你明确接受风险时：`sudo systemctl enable roll-live` |
 
-停止服务**不会**自动平仓；停止后应对账确认交易所状态（见根目录 `README.md`）。
+停止服务**不会**自动平仓；停止后应对账确认 **USD-M / U 本位** 交易所状态（见根目录 [`README.md`](../../README.md) 与 Plan 3.0 §11.7）。
 
 ## 查看日志（journalctl）
 
@@ -121,9 +123,10 @@ python -m main reconcile-state \
 
 ## 环境隔离核对
 
-- `roll-testnet`：`settings.testnet.yaml` + `testnet.env` + `roll_state_testnet.json`
-- `roll-live`：`settings.live.yaml` + `live.env` + `roll_state_live.json`
+- `roll-testnet`：`settings.testnet.yaml` + `testnet.env` + `roll_state_testnet.json`（USD-M Testnet）
+- `roll-live`：`settings.live.yaml` + `live.env` + `roll_state_live.json`（USD-M live / `fapi.binance.com`）
 - **禁止**同时运行 `roll-live.service` 与前台 `run-loop --config settings.live.yaml --no-dry-run`
+- **禁止** live 配置使用 `dapi.binance.com` 或 `/dapi`（COIN-M 已废弃）
 
 ## 卸载
 

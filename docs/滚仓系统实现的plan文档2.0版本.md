@@ -1,5 +1,7 @@
 # 滚仓系统实现的 Plan 文档 2.0 版本
 
+> **【历史文档 · COIN-M】** 本文档为 **2.0** 实现计划，面向 Binance **COIN-M 币本位** Futures live 与 systemd 运维。**当前系统标准已为 3.0 USD-M / U 本位 USDT 永续**（`fapi.binance.com` + `/fapi/v1`）。下文中的 `dapi.binance.com`、`coin_m_prefix`、`DOGEUSD_PERP`、COIN-M 网页操作等均为历史描述，**勿用于当前系统**。请参阅 [`滚仓系统实现的plan文档3.0版本.md`](滚仓系统实现的plan文档3.0版本.md) 与 [`live-go-live-acceptance.md`](live-go-live-acceptance.md)。
+>
 > 本文档用于在现有 1.0 系统基础上继续实施 2.0：接入 Binance COIN-M Futures 实盘 live 自动交易、改造本地密钥文件管理、部署到 Ubuntu 云服务器，并给出可复制给 Cursor 逐阶段执行的 prompts。本文档只描述计划、验收方式和使用方法，不包含代码。
 
 ## 1. 2.0 背景与边界

@@ -1,6 +1,8 @@
 # 滚仓交易系统（Binance USD-M Futures / U 本位 USDT 永续）
 
-Python 单体策略框架：**监测多候选标的，任一时刻最多交易一个标的**。默认交易产品为 **Binance USD-M USDT 永续**（`/fapi/v1`）。支持 dry-run、`run-loop` Testnet signed 闭环（显式开启）、回测与离线趋势验收。
+Python 单体策略框架：**监测多候选标的，任一时刻最多交易一个标的**。当前系统标准为 **Binance USD-M / U 本位 USDT 永续合约**（live：`https://fapi.binance.com` + `/fapi/v1`；Testnet：同一 host + `/fapi/v1`）。支持 dry-run、`run-loop` Testnet signed 闭环（显式开启）、回测与离线趋势验收。
+
+> **版本说明：** 3.0 已将产品线从 2.0 的 COIN-M 币本位迁移为 USD-M。Plan 1.0 / 2.0 文档保留历史内容；**当前入口与运维以本文档与 [`docs/滚仓系统实现的plan文档3.0版本.md`](docs/滚仓系统实现的plan文档3.0版本.md) 为准。**
 
 **每一条终端命令在执行前都必须先激活 Conda 环境：**
 
@@ -17,7 +19,7 @@ pip install -e ".[dev]"
 
 ## 配置文件
 
-2.0 将 **Testnet** 与 **live（实盘）** 的配置、密钥与状态文件严格分离。请从示例复制为本地文件（**勿提交 Git**）：
+**Testnet** 与 **live（实盘）** 的配置、密钥与状态文件严格分离。请从示例复制为本地文件（**勿提交 Git**）：
 
 ```bash
 conda activate roll-env
@@ -130,7 +132,7 @@ python -m main run-loop --config config/settings.live.yaml --secrets-file config
 
 **停止与确认无持仓：** 在运行循环的终端 **Ctrl+C**；然后对当前环境执行 `reconcile-state`（带上对应的 `--config` 与 `--secrets-file`），检查 `nonzero_position_symbols=[]`。手动平仓请在对应 Binance **USD-M / U 本位合约** 环境（Testnet 或实盘）网页撤单并市价平仓。
 
-**其他：** `python -m main trend-offline --symbol DOGEUSDT`、`python -m main backtest --days 180`、`python -m main coinm-signed-smoke --symbol DOGEUSDT`。
+**其他：** `python -m main trend-offline --symbol DOGEUSDT`、`python -m main backtest --days 180`、`python -m main coinm-signed-smoke --symbol DOGEUSDT`（CLI 名称为历史保留，实际验收 **USD-M Testnet** Signed API，symbol 如 `DOGEUSDT`）。
 
 ## 验收：不会混用状态、密钥与 COIN-M（dapi）
 
@@ -210,9 +212,9 @@ sudo systemctl disable roll-testnet
 sudo systemctl disable roll-live
 ```
 
-## Live 上线前验收（2.0 Prompt 8）
+## Live 上线前验收（USD-M / 3.0）
 
-在启用实盘 signed 自动交易或 `roll-live.service` 之前，按顺序完成 Testnet 闭环、live dry-run（≥24h）、live 对账、极小资金单轮 `--once` 与人工记录：
+在启用 **USD-M** 实盘 signed 自动交易或 `roll-live.service` 之前，按顺序完成 Testnet 闭环、live dry-run（≥24h）、live 对账、极小资金单轮 `--once` 与人工记录：
 
 - **流程与命令**：[`docs/live-go-live-acceptance.md`](docs/live-go-live-acceptance.md)
 - **可打印清单**：[`docs/checklists/live-go-live-checklist.md`](docs/checklists/live-go-live-checklist.md)
@@ -228,10 +230,12 @@ bash scripts/acceptance/preflight.sh
 
 ## 文档
 
-- 1.0 设计与操作：`docs/滚仓系统实现的plan文档.md` §11–§12。
-- 3.0 USD-M 迁移计划：`docs/滚仓系统实现的plan文档3.0版本.md`。
-- **Live 最终验收**：`docs/live-go-live-acceptance.md`。
-- systemd 安装细节：`deploy/systemd/README.md`。
+- **当前标准（3.0 USD-M）**：[`docs/滚仓系统实现的plan文档3.0版本.md`](docs/滚仓系统实现的plan文档3.0版本.md) §11–§12（系统使用方法与运维）。
+- **Live 最终验收**：[`docs/live-go-live-acceptance.md`](docs/live-go-live-acceptance.md)。
+- systemd 安装细节：[`deploy/systemd/README.md`](deploy/systemd/README.md)。
+- **历史参考（COIN-M，勿按此配置当前系统）**：
+  - [`docs/滚仓系统实现的plan文档.md`](docs/滚仓系统实现的plan文档.md)（1.0）
+  - [`docs/滚仓系统实现的plan文档2.0版本.md`](docs/滚仓系统实现的plan文档2.0版本.md)（2.0）
 
 ## 测试
 
