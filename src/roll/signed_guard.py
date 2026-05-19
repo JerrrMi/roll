@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from roll.binance_client import (
     DEFAULT_LIVE_REST_BASE,
     DEFAULT_TESTNET_REST_BASE,
@@ -27,6 +29,77 @@ def normalize_trading_environment(environment: str | None) -> str:
     if raw in {"", "testnet"}:
         return "testnet"
     return raw
+
+
+def _path_key(path: Path | str | None) -> str:
+    if path is None:
+        return ""
+    return str(path).replace("\\", "/").lower()
+
+
+def assert_signed_environment_isolation(
+    *,
+    environment: str,
+    secrets_path: Path | None,
+    state_path: Path | None,
+    command_label: str = "run-loop",
+) -> None:
+    """signed 自动交易时校验密钥与状态文件与 environment 匹配（禁止 Testnet/live 混用）。"""
+    env = normalize_trading_environment(environment)
+    prefix = f"[{command_label}] --no-dry-run 被拒绝：environment={env!r}"
+    sp = _path_key(secrets_path)
+    st = _path_key(state_path)
+
+    if env == "live":
+        if not sp:
+            raise SignedTradingGuardError(
+                f"{prefix} live signed 须通过 --secrets-file 或配置 secrets.file 指定 live 密钥。"
+            )
+        if "testnet" in sp and "live" not in sp:
+            raise SignedTradingGuardError(
+                f"{prefix} 不得对 live 使用 Testnet 密钥文件（{secrets_path!s}）。"
+            )
+        if "live" not in sp:
+            raise SignedTradingGuardError(
+                f"{prefix} live 密钥路径须包含 `live`（例如 config/secrets/live.env），当前：{secrets_path!s}。"
+            )
+        if not st:
+            raise SignedTradingGuardError(
+                f"{prefix} live signed 须配置 state.backend=json 与 state.path"
+                "（例如 ./data/roll_state_live.json）。"
+            )
+        if "roll_state_live" not in st:
+            raise SignedTradingGuardError(
+                f"{prefix} live 状态文件须为 roll_state_live.json（state.path），当前：{state_path!s}。"
+            )
+        if "testnet" in st:
+            raise SignedTradingGuardError(
+                f"{prefix} 不得对 live 使用 Testnet 状态文件（{state_path!s}）。"
+            )
+        return
+
+    if env == "testnet":
+        if not sp:
+            raise SignedTradingGuardError(
+                f"{prefix} Testnet signed 须通过 --secrets-file 或配置 secrets.file 指定 Testnet 密钥。"
+            )
+        if "live" in sp and "testnet" not in sp:
+            raise SignedTradingGuardError(
+                f"{prefix} 不得对 Testnet 使用 live 密钥文件（{secrets_path!s}）。"
+            )
+        if "testnet" not in sp:
+            raise SignedTradingGuardError(
+                f"{prefix} Testnet 密钥路径须包含 `testnet`（例如 config/secrets/testnet.env），"
+                f"当前：{secrets_path!s}。"
+            )
+        if st and "roll_state_testnet" not in st:
+            raise SignedTradingGuardError(
+                f"{prefix} Testnet 状态文件须为 roll_state_testnet.json（state.path），当前：{state_path!s}。"
+            )
+        if st and "live" in st and "testnet" not in st:
+            raise SignedTradingGuardError(
+                f"{prefix} 不得对 Testnet 使用 live 状态文件（{state_path!s}）。"
+            )
 
 
 def _reject_dapi_rest_base(rest_base: str, *, prefix: str) -> None:

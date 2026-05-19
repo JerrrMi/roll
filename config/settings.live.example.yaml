@@ -37,6 +37,8 @@ strategy:
   # 启用 live signed 自动交易还需：environment=live、rest_base=https://fapi.binance.com、
   # api_prefix=/fapi/v1、CLI --no-dry-run、live 专用 secrets/state，以及启动前 reconcile-state（见 README）。
   live_trading_enabled: false
+  # 首次 live signed 单轮验收可设为 min_market（见 settings.live.minimal-funds.example.yaml）
+  # open_quantity_mode: min_market
   loop_interval_sec: 120
   klines_limit: 600
   min_monitor_symbols: 3

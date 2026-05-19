@@ -198,7 +198,7 @@ python -m main reconcile-state \
 
 脚本退出码：`0` 通过；`1` 存在 halt 或非预期快照（须先人工清理，见 Plan 2.0 §8.4）。
 
-**网页复核（强烈建议）：** Binance → 衍生品 → **币本位合约 COIN-M** → 仓位 0、当前委托为空。
+**网页复核（强烈建议）：** Binance → 衍生品 → **U 本位合约 / USD-M Futures** → 仓位 0、当前委托为空。
 
 ---
 
@@ -206,7 +206,7 @@ python -m main reconcile-state \
 
 ### 资金与参数（人工）
 
-1. 实盘 COIN-M 账户仅保留**可承受全部损失**的极小保证金。
+1. 实盘 USD-M USDT 永续账户仅保留**可承受全部损失**的极小保证金。
 2. 将 [`config/settings.live.minimal-funds.example.yaml`](../config/settings.live.minimal-funds.example.yaml) 中的保守项合并进你的 `config/settings.live.yaml`（**不改趋势模型代码**）。
 3. 设置 `strategy.live_trading_enabled: true`。
 

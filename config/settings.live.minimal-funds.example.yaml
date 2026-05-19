@@ -12,7 +12,9 @@ strategy:
   testnet_signed_orders_enabled: false
   loop_interval_sec: 120
   min_monitor_symbols: 3
-  # 降低 sizing 相关输入（RiskEngine 使用 dry_run_equity 作权益参考）
+  # 首次 live signed：交易所 MARKET 最小可交易量（验收/极小资金）
+  open_quantity_mode: min_market
+  # 降低 sizing 相关输入（Kelly 路径仍读 dry_run_equity；min_market 以账户 USDT 权益为准）
   dry_run_equity: 500
   initial_leverage: 5
   stop_adverse_fraction: 0.05

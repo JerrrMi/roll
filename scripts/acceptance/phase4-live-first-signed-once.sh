@@ -43,4 +43,4 @@ if [[ ! -f "${DIR}/record.md" ]]; then
   cp docs/templates/live-acceptance-record.template.md "${DIR}/record.md" 2>/dev/null || true
 fi
 
-echo "[acceptance] 阶段 4 完成。请填写 ${DIR}/record.md、复核 Binance 实盘 COIN-M 网页。"
+echo "[acceptance] 阶段 4 完成。请填写 ${DIR}/record.md、复核 Binance 实盘 USD-M / U 本位合约网页。"

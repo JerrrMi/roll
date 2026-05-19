@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import pytest
 
+from pathlib import Path
+
 from roll.signed_guard import (
     ReconcileStateGuardError,
     SignedTradingGuardError,
     assert_reconcile_rest_host_allowed,
+    assert_signed_environment_isolation,
     assert_signed_trading_allowed,
 )
 
@@ -167,6 +170,41 @@ def test_reconcile_testnet_rejects_live_host() -> None:
             api_prefix=_API,
         )
     assert "environment='testnet'" in str(exc.value)
+
+
+def test_live_isolation_rejects_testnet_secrets() -> None:
+    with pytest.raises(SignedTradingGuardError, match="Testnet 密钥"):
+        assert_signed_environment_isolation(
+            environment="live",
+            secrets_path=Path("config/secrets/testnet.env"),
+            state_path=Path("data/roll_state_live.json"),
+        )
+
+
+def test_live_isolation_requires_live_state() -> None:
+    with pytest.raises(SignedTradingGuardError, match="roll_state_live"):
+        assert_signed_environment_isolation(
+            environment="live",
+            secrets_path=Path("config/secrets/live.env"),
+            state_path=Path("data/roll_state_testnet.json"),
+        )
+
+
+def test_live_isolation_passes() -> None:
+    assert_signed_environment_isolation(
+        environment="live",
+        secrets_path=Path("config/secrets/live.env"),
+        state_path=Path("data/roll_state_live.json"),
+    )
+
+
+def test_testnet_isolation_rejects_live_secrets() -> None:
+    with pytest.raises(SignedTradingGuardError, match="live 密钥"):
+        assert_signed_environment_isolation(
+            environment="testnet",
+            secrets_path=Path("config/secrets/live.env"),
+            state_path=Path("data/roll_state_testnet.json"),
+        )
 
 
 def test_reconcile_rejects_dapi_prefix() -> None:

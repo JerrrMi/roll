@@ -526,8 +526,13 @@ def _cmd_run_loop(project_root: Path, argv: list[str]) -> int:
     if args_loop.no_dry_run:
         from roll.binance_client import BinanceCoinMSignedClient
         from roll.position_manager import PositionManager
-        from roll.position_manager import reconcile_coin_m_account
-        from roll.signed_guard import SignedTradingGuardError, assert_signed_trading_allowed
+        from roll.position_manager import reconcile_usdm_account
+        from roll.secrets import resolve_secrets_file_path
+        from roll.signed_guard import (
+            SignedTradingGuardError,
+            assert_signed_environment_isolation,
+            assert_signed_trading_allowed,
+        )
 
         try:
             signed_environment = assert_signed_trading_allowed(
@@ -568,8 +573,23 @@ def _cmd_run_loop(project_root: Path, argv: list[str]) -> int:
         )
         signed_client_live = BinanceCoinMSignedClient(cfg_s)
 
+        secrets_resolved = resolve_secrets_file_path(
+            secrets_file_cli=args_loop.secrets_file,
+            settings=settings,
+            project_root=project_root,
+        )
         pm_for_live = PositionManager()
         store_live = _state_store_from_settings(settings)
+        try:
+            assert_signed_environment_isolation(
+                environment=signed_environment,
+                secrets_path=secrets_resolved,
+                state_path=getattr(store_live, "path", None),
+                command_label="run-loop",
+            )
+        except SignedTradingGuardError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
         persisted_early = store_live.load()
 
         if args_loop.clear_entry_pause:
@@ -582,7 +602,10 @@ def _cmd_run_loop(project_root: Path, argv: list[str]) -> int:
             pm_for_live.pause_opening_entries(str(rs))
 
         signed_client_live.sync_server_time()
-        reconcile_outcome = reconcile_coin_m_account(signed_client_live.position_risk(), signed_client_live.open_orders())
+        reconcile_outcome = reconcile_usdm_account(
+            signed_client_live.position_risk(),
+            signed_client_live.open_orders(),
+        )
         pm_for_live.restore_from_exchange(reconcile_outcome)
         snap_pm = pm_for_live.snapshot_dict()
         stored_after_reconcile = store_live.load()
