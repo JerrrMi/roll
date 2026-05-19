@@ -1,5 +1,6 @@
-"""COIN-M Futures **仅限官方 Testnet**：对账→信号→杠杆→开仓→STOP 保护→追踪止损→反转平仓。
+"""COIN-M Futures signed 自动交易闭环（Testnet / live 共用）：对账→信号→杠杆→开仓→STOP 保护→追踪止损→反转平仓。
 
+须通过 `signed_guard.assert_signed_trading_allowed` 放行；live 另须单进程锁（见 `process_lock`）。
 异常开仓路径：`PositionManager.pause_opening_entries()` 暂停新开仓；已有持仓仍可维护保护单并按信号平仓。"""
 from __future__ import annotations
 

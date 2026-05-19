@@ -512,6 +512,11 @@ def _cmd_run_loop(project_root: Path, argv: list[str]) -> int:
                 last_signal=stored_after_reconcile.last_signal if isinstance(stored_after_reconcile.last_signal, dict) else {},
             )
         )
+        if reconcile_outcome.halt_automatic_trading:
+            log.warning(
+                "startup reconcile halt: %s — 不会开新仓；请人工处理后在交易所确认并重新 reconcile-state",
+                reconcile_outcome.halt_reason,
+            )
 
     client = BinanceCoinMClient(
         BinanceClientConfig(
@@ -532,36 +537,59 @@ def _cmd_run_loop(project_root: Path, argv: list[str]) -> int:
 
     exec_client_for_loop = client if dry_run else signed_client_live
 
-    if args_loop.once:
-        try:
-            run_strategy_iteration(
-                settings=settings,
-                client=exec_client_for_loop,
-                params=params,
-                dry_run=dry_run,
-                signed_client=signed_client_live,
-                position_manager=pm_for_live,
-                state_store=store_live,
-                clear_entry_pause=bool(args_loop.clear_entry_pause and args_loop.no_dry_run),
-            )
-        except InsufficientMonitorableSymbolsError:
-            log.warning(
-                "run-loop stopped: fewer than min_monitor_symbols matched on this venue "
-                "(try adding exact baseAsset codes from exchangeInfo or set strategy.public_rest_base)."
-            )
-            return 3
-        return 0
+    from contextlib import nullcontext
 
-    run_strategy_forever(
-        settings=settings,
-        client=exec_client_for_loop,
-        dry_run=dry_run,
-        params=params,
-        signed_client=signed_client_live,
-        position_manager=pm_for_live,
-        state_store=store_live,
-        clear_entry_pause_once=bool(args_loop.clear_entry_pause and args_loop.no_dry_run),
-    )
+    run_lock = nullcontext()
+    if signed_environment == "live":
+        from roll.process_lock import LiveProcessLockError, acquire_live_singleton_lock
+
+        lock_state_path = getattr(store_live, "path", None) if store_live is not None else None
+        if lock_state_path is None:
+            print(
+                "[run-loop] live signed 自动交易要求 state.backend=json 且配置 state.path（单进程锁与状态文件）。",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            run_lock = acquire_live_singleton_lock(lock_state_path)
+        except LiveProcessLockError as exc:
+            print(f"[run-loop] {exc}", file=sys.stderr)
+            return 2
+        from roll.process_lock import lock_path_for_state_json
+
+        log.info("live singleton process lock acquired: %s", lock_path_for_state_json(lock_state_path))
+
+    with run_lock:
+        if args_loop.once:
+            try:
+                run_strategy_iteration(
+                    settings=settings,
+                    client=exec_client_for_loop,
+                    params=params,
+                    dry_run=dry_run,
+                    signed_client=signed_client_live,
+                    position_manager=pm_for_live,
+                    state_store=store_live,
+                    clear_entry_pause=bool(args_loop.clear_entry_pause and args_loop.no_dry_run),
+                )
+            except InsufficientMonitorableSymbolsError:
+                log.warning(
+                    "run-loop stopped: fewer than min_monitor_symbols matched on this venue "
+                    "(try adding exact baseAsset codes from exchangeInfo or set strategy.public_rest_base)."
+                )
+                return 3
+            return 0
+
+        run_strategy_forever(
+            settings=settings,
+            client=exec_client_for_loop,
+            dry_run=dry_run,
+            params=params,
+            signed_client=signed_client_live,
+            position_manager=pm_for_live,
+            state_store=store_live,
+            clear_entry_pause_once=bool(args_loop.clear_entry_pause and args_loop.no_dry_run),
+        )
     return 0
 
 

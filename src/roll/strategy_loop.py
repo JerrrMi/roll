@@ -45,7 +45,7 @@ class StrategyLoopParams:
     trail_stop_fraction: float | None = None
     # 安全开关：`python -m main run-loop --no-dry-run`（Testnet signed）需显式 true
     testnet_signed_orders_enabled: bool = False
-    # 实盘 signed 下单（当前代码未接入；保留开关以便默认永不误开实盘）
+    # 安全开关：environment=live 时 signed 自动交易须显式 true
     live_trading_enabled: bool = False
 
 
@@ -252,7 +252,7 @@ def run_strategy_iteration(
     state_store=None,
     clear_entry_pause: bool = False,
 ) -> None:
-    """单次扫描：候选趋势 → dry-run 打印或 Testnet Signed 自动交易闭环。"""
+    """单次扫描：候选趋势 → dry-run 打印或 signed 自动交易闭环（Testnet / live）。"""
     log = get_logger("strategy_loop")
     out: LoggerFn = emit or log.info
     p = params or parse_strategy_loop_params(settings)

@@ -87,7 +87,7 @@ chmod 600 config/secrets/testnet.env   # Linux/macOS
 | --- | --- |
 | **dry-run（默认）** | `python -m main run-loop --config config/settings.testnet.yaml`：只拉行情、打印决策，**不发 signed 单**。 |
 | **Testnet 真实挂单** | 需 **CLI** `--no-dry-run` **且** `strategy.testnet_signed_orders_enabled: true` **且** Testnet `rest_base` **且** Testnet 密钥/配置。 |
-| **实盘自动交易** | `strategy.live_trading_enabled` **默认为 false**；当前 **`run-loop --no-dry-run` 仅允许 Testnet**，不接实盘 REST。 |
+| **实盘自动交易（live）** | 须 **`environment: live`**、`rest_base=https://dapi.binance.com`、**`live_trading_enabled: true`**、CLI **`--no-dry-run`**、live 专用 **`secrets`/`state.path`**；启动时自动对账；**同一账户仅允许一个 live 进程**（见下文）。 |
 
 自动交易若配置了 `strategy.public_rest_base`，则其必须与 `binance.rest_base` 相同；dry-run 可用实盘公共 REST 仅读行情时参见 Testnet 示例 YAML 注释。
 
@@ -116,6 +116,16 @@ python -m main run-loop --config config/settings.testnet.yaml --secrets-file con
 conda activate roll-env
 python -m main reconcile-state --config config/settings.live.yaml --secrets-file config/secrets/live.env
 ```
+
+**live signed 单轮验收（极小资金；须已将对账通过且 `live_trading_enabled: true`）：**
+
+```bash
+conda activate roll-env
+python -m main reconcile-state --config config/settings.live.yaml --secrets-file config/secrets/live.env
+python -m main run-loop --config config/settings.live.yaml --secrets-file config/secrets/live.env --once --no-dry-run
+```
+
+**live signed 持续运行：** 将上式去掉 `--once`；**不要**同时再开一个前台 `run-loop --no-dry-run` 或第二个 `roll-live.service`——程序会在 `data/roll_state_live.json.lock` 上互斥，第二个进程会拒绝启动。
 
 **停止与确认无持仓：** 在运行循环的终端 **Ctrl+C**；然后对当前环境执行 `reconcile-state`（带上对应的 `--config` 与 `--secrets-file`），检查 `nonzero_position_symbols=[]`。手动平仓请在对应 Binance **COIN-M** 环境（Testnet 或实盘）网页撤单并市价平仓。
 
