@@ -143,10 +143,75 @@ python -m main run-loop --config config/settings.live.yaml --secrets-file config
 3. 确认生成/更新的是 `data/roll_state_testnet.json` 与 `data/roll_state_live.json`（两个文件，互不覆盖）。
 4. 故意交叉（例如在 Testnet 命令加 `--secrets-file config/secrets/live.env`）时，应对账到错误环境或鉴权失败——**不要**在生产中这样运行；正常运维应始终让 `--config`、`secrets.file` 与 `--secrets-file` 同属一个环境。
 
+## Ubuntu 云服务器：systemd 托管
+
+单元文件模板在仓库 **`deploy/systemd/`**，安装到服务器后为 **`/etc/systemd/system/roll-testnet.service`** 与 **`/etc/systemd/system/roll-live.service`**。详细安装与路径说明见 [`deploy/systemd/README.md`](deploy/systemd/README.md)。
+
+服务在**项目根目录**（`WorkingDirectory`，默认 `/opt/roll`）运行，使用 **`roll-env` 中的 Python**（`…/envs/roll-env/bin/python`，等价于 `conda activate roll-env`），并通过 **`EnvironmentFile`** 与 **`--secrets-file`** 加载对应密钥，通过 **`--config`** 使用对应环境的 YAML。
+
+### 安装（首次）
+
+```bash
+conda activate roll-env
+cd /opt/roll
+pip install -e ".[dev]"
+# 编辑 deploy/systemd/*.service 中的 User、WorkingDirectory、Python 路径后：
+sudo cp deploy/systemd/roll-testnet.service /etc/systemd/system/
+sudo cp deploy/systemd/roll-live.service /etc/systemd/system/
+sudo systemctl daemon-reload
+```
+
+**live 默认不要开机自启**：安装后只用 `start`；除非你明确接受重启后自动恢复实盘进程，否则**不要**执行 `sudo systemctl enable roll-live`。
+
+### 启动前对账（必做）
+
+```bash
+conda activate roll-env
+cd /opt/roll
+# Testnet
+python -m main reconcile-state --config config/settings.testnet.yaml --secrets-file config/secrets/testnet.env
+# live（满足 live 安全闸门后再执行）
+python -m main reconcile-state --config config/settings.live.yaml --secrets-file config/secrets/live.env
+```
+
+### Testnet：启动 / 停止 / 重启 / 状态 / 日志
+
+```bash
+sudo systemctl start roll-testnet
+sudo systemctl stop roll-testnet
+sudo systemctl restart roll-testnet
+sudo systemctl status roll-testnet
+journalctl -u roll-testnet -n 200 --no-pager
+journalctl -u roll-testnet -f
+```
+
+可选开机自启：`sudo systemctl enable roll-testnet`
+
+### live：启动 / 停止 / 重启 / 状态 / 日志
+
+```bash
+sudo systemctl start roll-live
+sudo systemctl stop roll-live
+sudo systemctl restart roll-live
+sudo systemctl status roll-live
+journalctl -u roll-live -n 200 --no-pager
+journalctl -u roll-live -f
+```
+
+**不要**与前台 `run-loop --config config/settings.live.yaml --no-dry-run` 同时运行。停止后应对账确认持仓（见上文「停止与确认无持仓」）。
+
+### 禁用开机自启
+
+```bash
+sudo systemctl disable roll-testnet
+sudo systemctl disable roll-live
+```
+
 ## 文档
 
 - 1.0 设计与操作：`docs/滚仓系统实现的plan文档.md` §11–§12。
 - 2.0 实盘与部署计划：`docs/滚仓系统实现的plan文档2.0版本.md`。
+- systemd 安装细节：`deploy/systemd/README.md`。
 
 ## 测试
 

@@ -1,0 +1,37 @@
+# Roll — Binance COIN-M Futures 实盘 live signed 自动交易
+#
+# 警告：本服务会下真实资金订单。启动前必须完成对账与小资金验收。
+# 默认不要开机自启：安装后仅使用 systemctl start，勿执行 systemctl enable，
+# 除非你明确希望服务器重启后自动恢复 live 进程。
+#
+# 安装步骤同 roll-testnet.service，复制到 /etc/systemd/system/ 后 daemon-reload。
+# 不要同时运行 roll-live.service 与前台 live run-loop --no-dry-run。
+
+[Unit]
+Description=Roll Trading System — Live signed auto-trading
+Documentation=file:///opt/roll/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/roll
+
+EnvironmentFile=-/opt/roll/config/secrets/live.env
+
+ExecStart=/home/ubuntu/miniconda3/envs/roll-env/bin/python -m main run-loop \
+  --config config/settings.live.yaml \
+  --secrets-file config/secrets/live.env \
+  --no-dry-run
+
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+TimeoutStopSec=30
+
+# 保留 [Install] 以便需要时手动 enable；仓库默认不要求 enable。
+[Install]
+WantedBy=multi-user.target

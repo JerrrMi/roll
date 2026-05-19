@@ -1,0 +1,42 @@
+# Roll — Binance COIN-M Futures Testnet signed 自动交易
+#
+# 安装（在 Ubuntu 云服务器上，先 conda activate roll-env 完成 pip install -e）：
+#   1. 编辑下方 User、WorkingDirectory、EnvironmentFile、ExecStart 中的路径
+#   2. sudo cp deploy/systemd/roll-testnet.service /etc/systemd/system/
+#   3. sudo systemctl daemon-reload
+#   4. 启动前人工对账（见 deploy/systemd/README.md）
+#   5. sudo systemctl start roll-testnet
+#
+# ExecStart 使用 roll-env 环境中的 Python（等价于 conda activate roll-env）。
+
+[Unit]
+Description=Roll Trading System — Testnet signed auto-trading
+Documentation=file:///opt/roll/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/roll
+
+# 对应环境密钥（权限建议 chmod 600）
+EnvironmentFile=-/opt/roll/config/secrets/testnet.env
+
+# 使用 roll-env 的 Python，勿用系统 python3
+ExecStart=/home/ubuntu/miniconda3/envs/roll-env/bin/python -m main run-loop \
+  --config config/settings.testnet.yaml \
+  --secrets-file config/secrets/testnet.env \
+  --no-dry-run
+
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# 进程异常退出时保留足够时间让 journal 刷盘
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

@@ -277,70 +277,60 @@ python -m main run-loop --config config/settings.live.yaml --secrets-file config
 
 ### 7.4 systemd 托管
 
-建议创建两个服务：
+仓库已提供可安装的单元模板（**不修改策略模型**）：
 
-- `roll-testnet.service`
-- `roll-live.service`
+| 服务 | 仓库路径 | 安装到服务器 |
+| --- | --- | --- |
+| Testnet | `deploy/systemd/roll-testnet.service` | `/etc/systemd/system/roll-testnet.service` |
+| live | `deploy/systemd/roll-live.service` | `/etc/systemd/system/roll-live.service` |
+
+运维说明见 `deploy/systemd/README.md` 与根目录 `README.md`「Ubuntu 云服务器：systemd 托管」。
 
 Testnet 服务职责：
 
-- 使用 `config/settings.testnet.yaml`。
-- 使用 `config/secrets/testnet.env`。
+- 在 `WorkingDirectory`（项目根，如 `/opt/roll`）运行。
+- 使用 `roll-env` 的 Python：`…/miniconda3/envs/roll-env/bin/python`（等价 `conda activate roll-env`）。
+- 使用 `config/settings.testnet.yaml` 与 `--secrets-file config/secrets/testnet.env`。
+- `EnvironmentFile` 加载 `config/secrets/testnet.env`。
 - 写入 `data/roll_state_testnet.json`。
 - 只连接 Testnet REST。
 
 live 服务职责：
 
-- 使用 `config/settings.live.yaml`。
-- 使用 `config/secrets/live.env`。
+- 同上目录与 Python 约定。
+- 使用 `config/settings.live.yaml` 与 `--secrets-file config/secrets/live.env`。
+- `EnvironmentFile` 加载 `config/secrets/live.env`。
 - 写入 `data/roll_state_live.json`。
 - 只连接 live REST。
 
-服务启动前建议先人工执行一次对账命令；后续也可在服务启动脚本中加入启动前对账，但对账失败必须阻止服务继续开新仓。
+服务启动前**必须**先人工执行一次对账；对账失败时不应 `systemctl start` signed 服务。
 
-`roll-testnet.service` 模板应表达以下内容：
+**安装：**
 
-```ini
-[Unit]
-Description=Roll Trading System Testnet
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=ubuntu
-WorkingDirectory=/opt/roll
-EnvironmentFile=/opt/roll/config/secrets/testnet.env
-ExecStart=/bin/bash -lc 'source ~/miniconda3/etc/profile.d/conda.sh && conda activate roll-env && python -m main run-loop --config config/settings.testnet.yaml --no-dry-run'
-Restart=on-failure
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
+```bash
+conda activate roll-env
+cd /opt/roll
+# 编辑 deploy/systemd/*.service 中的 User、WorkingDirectory、Python 绝对路径
+sudo cp deploy/systemd/roll-testnet.service /etc/systemd/system/
+sudo cp deploy/systemd/roll-live.service /etc/systemd/system/
+sudo systemctl daemon-reload
 ```
 
-`roll-live.service` 模板应表达以下内容：
+**live 默认不开机自启**：仅 `sudo systemctl start roll-live`；不要默认 `enable roll-live`。小资金试运行稳定后，若确需重启自启，再显式 `sudo systemctl enable roll-live`。
 
-```ini
-[Unit]
-Description=Roll Trading System Live
-After=network-online.target
-Wants=network-online.target
+**常用命令（Testnet 将单元名换为 `roll-live` 即适用于实盘）：**
 
-[Service]
-Type=simple
-User=ubuntu
-WorkingDirectory=/opt/roll
-EnvironmentFile=/opt/roll/config/secrets/live.env
-ExecStart=/bin/bash -lc 'source ~/miniconda3/etc/profile.d/conda.sh && conda activate roll-env && python -m main run-loop --config config/settings.live.yaml --no-dry-run'
-Restart=on-failure
-RestartSec=10
+| 操作 | 命令 |
+| --- | --- |
+| 启动 | `sudo systemctl start roll-testnet` |
+| 停止 | `sudo systemctl stop roll-testnet` |
+| 重启 | `sudo systemctl restart roll-testnet` |
+| 状态 | `sudo systemctl status roll-testnet` |
+| 最近日志 | `journalctl -u roll-testnet -n 200 --no-pager` |
+| 跟踪日志 | `journalctl -u roll-testnet -f` |
+| 禁用开机自启 | `sudo systemctl disable roll-testnet` |
 
-[Install]
-WantedBy=multi-user.target
-```
-
-实际实现时，`ExecStart` 可改为使用 `--secrets-file`，也可依赖 `EnvironmentFile`。两种方式必须只读取对应环境的密钥。live 服务不建议默认执行 `systemctl enable`，只有小资金试运行稳定后再考虑开机自启。
+`ExecStart` 同时指定 `--secrets-file` 与 `EnvironmentFile`，两种方式只读取**当前环境**的密钥，且必须与 `--config` 一致。
 
 ## 8. 云服务器运行与停止方法
 
