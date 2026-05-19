@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from roll.signed_guard import SignedTradingGuardError, assert_signed_trading_allowed
+from roll.signed_guard import (
+    ReconcileStateGuardError,
+    SignedTradingGuardError,
+    assert_reconcile_rest_host_allowed,
+    assert_signed_trading_allowed,
+)
 
 
 def test_testnet_passes_with_switch_and_host() -> None:
@@ -82,3 +87,37 @@ def test_unknown_environment_rejected() -> None:
             live_trading_enabled=True,
         )
     assert "staging" in str(exc.value)
+
+
+def test_reconcile_testnet_passes() -> None:
+    env = assert_reconcile_rest_host_allowed(
+        environment="testnet",
+        rest_base="https://testnet.binancefuture.com",
+    )
+    assert env == "testnet"
+
+
+def test_reconcile_live_passes() -> None:
+    env = assert_reconcile_rest_host_allowed(
+        environment="live",
+        rest_base="https://dapi.binance.com",
+    )
+    assert env == "live"
+
+
+def test_reconcile_live_rejects_testnet_host() -> None:
+    with pytest.raises(ReconcileStateGuardError, match="rest_base") as exc:
+        assert_reconcile_rest_host_allowed(
+            environment="live",
+            rest_base="https://testnet.binancefuture.com",
+        )
+    assert "environment='live'" in str(exc.value)
+
+
+def test_reconcile_testnet_rejects_live_host() -> None:
+    with pytest.raises(ReconcileStateGuardError, match="rest_base") as exc:
+        assert_reconcile_rest_host_allowed(
+            environment="testnet",
+            rest_base="https://dapi.binance.com",
+        )
+    assert "environment='testnet'" in str(exc.value)

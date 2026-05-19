@@ -566,15 +566,17 @@ def _cmd_run_loop(project_root: Path, argv: list[str]) -> int:
 
 
 def _cmd_reconcile_state(project_root: Path, argv: list[str]) -> int:
-    from roll.binance_client import BinanceClientConfig, BinanceCoinMSignedClient, is_binance_coin_m_testnet_url
+    from roll.binance_client import BinanceClientConfig, BinanceCoinMSignedClient
     from roll.position_manager import bootstrap_position_manager_from_exchange_client
+    from roll.signed_guard import ReconcileStateGuardError, assert_reconcile_rest_host_allowed
     from roll.state_store import RuntimeState
 
     ap = argparse.ArgumentParser(
         prog="python -m main reconcile-state",
         description=(
-            "Binance COIN-M **Testnet** 启动对账：拉取全局 positionRisk + openOrders，"
-            "以交易所快照恢复单标的交易锁；检测到多标的持仓/跨标的挂单即挂起自动交易。"
+            "Binance COIN-M Testnet 或 live 启动对账：拉取全局 positionRisk + openOrders，"
+            "以交易所快照恢复单标的交易锁；检测到多标的持仓/跨标的挂单或异常状态时挂起自动交易。"
+            "REST host 须与配置 environment 一致（testnet → Testnet host，live → https://dapi.binance.com）。"
         ),
     )
     ap.add_argument(
@@ -597,17 +599,19 @@ def _cmd_reconcile_state(project_root: Path, argv: list[str]) -> int:
         print(f"[reconcile-state] 配置不存在或为空: {cfg_path}", file=sys.stderr)
         return 2
 
+    environment_raw = settings.get("environment")
     b = settings.get("binance", {}) if isinstance(settings.get("binance"), dict) else {}
     rest_base = str(b.get("rest_base", "https://testnet.binancefuture.com"))
     coin_m_prefix = str(b.get("coin_m_prefix", "/dapi/v1"))
     recv_window_ms = int(b.get("recv_window_ms", 5000))
 
-    if not is_binance_coin_m_testnet_url(rest_base):
-        print(
-            f"[reconcile-state] rest_base={rest_base!r} 非官方 Futures Testnet host；"
-            "本命令仅允许 testnet.binancefuture.com（见 is_binance_coin_m_testnet_url）。",
-            file=sys.stderr,
+    try:
+        environment = assert_reconcile_rest_host_allowed(
+            environment=str(environment_raw) if environment_raw is not None else None,
+            rest_base=rest_base,
         )
+    except ReconcileStateGuardError as exc:
+        print(f"[reconcile-state] {exc}", file=sys.stderr)
         return 2
 
     from roll.secrets import SecretsError, load_binance_credentials
@@ -633,19 +637,22 @@ def _cmd_reconcile_state(project_root: Path, argv: list[str]) -> int:
 
     _, outcome, (sync_ms, n_pos, n_ord) = bootstrap_position_manager_from_exchange_client(client)
 
-    print(f"exchange_rest_base={rest_base}")
+    pos_syms = sorted(outcome.position_symbols)
+    ord_syms = sorted(outcome.order_symbols)
+
+    print(f"environment={environment}")
+    print(f"rest_base={rest_base}")
     print(f"sync_server_offset_ms≈{sync_ms}")
     print(f"positionRisk_rows={n_pos} openOrders_rows={n_ord}")
-    print(f"nonzero_position_symbols={sorted(outcome.position_symbols)}")
-    print(f"symbols_with_open_orders={sorted(outcome.order_symbols)}")
+    print(f"nonzero_position_symbols={pos_syms}")
+    print(f"symbols_with_open_orders={ord_syms}")
     print(
         "reconcile="
         f"trade_lock_state={outcome.lock_state.value} "
         f"active_symbol={outcome.active_symbol!r} "
-        f"halt={outcome.halt_automatic_trading}"
+        f"halt_automatic_trading={outcome.halt_automatic_trading}"
     )
-    if outcome.halt_reason:
-        print(f"halt_reason={outcome.halt_reason}")
+    print(f"halt_reason={outcome.halt_reason!r}")
 
     if args_r.no_save:
         return 1 if outcome.halt_automatic_trading else 0

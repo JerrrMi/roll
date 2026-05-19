@@ -16,6 +16,10 @@ class SignedTradingGuardError(RuntimeError):
     """`run-loop --no-dry-run` 等 signed 路径未通过 environment-aware 守卫。"""
 
 
+class ReconcileStateGuardError(RuntimeError):
+    """`reconcile-state` 未通过 environment / rest_base 校验。"""
+
+
 def normalize_trading_environment(environment: str | None) -> str:
     """将配置 `environment` 规范为 `testnet` 或 `live`；空值视为 testnet。"""
     raw = (environment or "").strip().lower()
@@ -71,5 +75,37 @@ def assert_signed_trading_allowed(
         raise SignedTradingGuardError(
             f"{prefix} 缺失或未满足的安全开关：strategy.live_trading_enabled"
             "（当前为 false，须显式设为 true）。"
+        )
+    return env
+
+
+def assert_reconcile_rest_host_allowed(
+    *,
+    environment: str | None,
+    rest_base: str,
+    command_label: str = "reconcile-state",
+) -> str:
+    """校验对账命令的 environment 与 REST host 匹配；通过时返回规范后的 environment。"""
+    env = normalize_trading_environment(environment)
+    rb = (rest_base or "").strip() or DEFAULT_TESTNET_REST_BASE
+    prefix = f"[{command_label}] environment={env!r} rest_base={rb!r}"
+
+    if env not in _ALLOWED_ENVIRONMENTS:
+        raise ReconcileStateGuardError(
+            f"{prefix} 不支持的 environment（仅允许 testnet、live）。"
+        )
+
+    if env == "testnet":
+        if not is_binance_coin_m_testnet_url(rb):
+            expected = DEFAULT_TESTNET_REST_BASE
+            raise ReconcileStateGuardError(
+                f"{prefix} Testnet 对账仅允许官方 Futures Testnet REST host（{expected!r}）。"
+            )
+        return env
+
+    if not is_binance_coin_m_live_url(rb):
+        expected = DEFAULT_LIVE_REST_BASE
+        raise ReconcileStateGuardError(
+            f"{prefix} live 对账仅允许官方 COIN-M 实盘 REST host（{expected!r}）。"
         )
     return env
