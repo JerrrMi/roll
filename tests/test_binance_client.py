@@ -15,8 +15,8 @@ from roll.binance_client import (
     build_hmac_sha256,
     build_signed_query_string,
     format_floor_to_step_decimal_str,
-    is_binance_coin_m_live_url,
-    is_binance_coin_m_testnet_url,
+    is_binance_futures_testnet_url,
+    is_binance_usdm_live_url,
     parse_coin_m_specs_from_exchange_info,
     redact_signed_query_url,
     select_monitorable_coin_m_symbols,
@@ -144,7 +144,7 @@ def test_signed_query_lexicographic_and_bool() -> None:
 
 def test_redact_signature_param() -> None:
     raw = (
-        "https://testnet.binancefuture.com/dapi/v1/order?"
+        "https://testnet.binancefuture.com/fapi/v1/order?"
         "symbol=ABC&signature=aaaaaaaa&recvWindow=1"
     )
     clean = redact_signed_query_url(raw)
@@ -153,15 +153,16 @@ def test_redact_signature_param() -> None:
 
 
 def test_is_testnet_url_https_only() -> None:
-    assert is_binance_coin_m_testnet_url("https://testnet.binancefuture.com")
-    assert not is_binance_coin_m_testnet_url("http://testnet.binancefuture.com")
-    assert not is_binance_coin_m_testnet_url("https://dapi.binance.com")
+    assert is_binance_futures_testnet_url("https://testnet.binancefuture.com")
+    assert not is_binance_futures_testnet_url("http://testnet.binancefuture.com")
+    assert not is_binance_futures_testnet_url("https://fapi.binance.com")
 
 
 def test_is_live_url_https_only() -> None:
-    assert is_binance_coin_m_live_url("https://dapi.binance.com")
-    assert not is_binance_coin_m_live_url("http://dapi.binance.com")
-    assert not is_binance_coin_m_live_url("https://testnet.binancefuture.com")
+    assert is_binance_usdm_live_url("https://fapi.binance.com")
+    assert not is_binance_usdm_live_url("http://fapi.binance.com")
+    assert not is_binance_usdm_live_url("https://dapi.binance.com")
+    assert not is_binance_usdm_live_url("https://testnet.binancefuture.com")
 
 
 def test_floor_quantity_to_step_and_signed_client_requires_creds() -> None:

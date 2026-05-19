@@ -15,7 +15,7 @@ def _cmd_trend_offline(project_root: Path, argv: list[str]) -> int:
     p = argparse.ArgumentParser(
         prog="python -m main trend-offline",
         description=(
-            "从 Binance COIN-M 公共 REST 拉取历史 K 线，计算多周期趋势评分；"
+            "从 Binance USD-M 公共 REST 拉取历史 K 线，计算多周期趋势评分；"
             "不下单、不签名。"
         ),
     )
@@ -23,12 +23,12 @@ def _cmd_trend_offline(project_root: Path, argv: list[str]) -> int:
         "--config",
         type=Path,
         default=project_root / "config/settings.yaml",
-        help="用于读取 binance.rest_base / coin_m_prefix（默认同项目根路径）",
+        help="用于读取 binance.rest_base / api_prefix / product（默认同项目根路径）",
     )
     p.add_argument(
         "--symbol",
         required=True,
-        help="合约 symbol，例如 DOGEUSD_PERP",
+        help="合约 symbol，例如 DOGEUSDT",
     )
     p.add_argument(
         "--limit",
@@ -40,7 +40,8 @@ def _cmd_trend_offline(project_root: Path, argv: list[str]) -> int:
 
     import yaml
 
-    from roll.offline_trend import evaluate_symbol_offline_public, settings_to_offline_urls
+    from roll.binance_config import BinanceConfigError, parse_binance_settings
+    from roll.offline_trend import evaluate_symbol_offline_public
 
     cfg_path = Path(args_local.config)
     if cfg_path.is_file():
@@ -48,16 +49,20 @@ def _cmd_trend_offline(project_root: Path, argv: list[str]) -> int:
         settings = raw if isinstance(raw, dict) else {}
     else:
         settings = {}
-    rb, pref = settings_to_offline_urls(settings)
+    try:
+        bcfg = parse_binance_settings(settings)
+    except BinanceConfigError as exc:
+        print(f"[trend-offline] {exc}", file=sys.stderr)
+        return 2
 
     sig = evaluate_symbol_offline_public(
         args_local.symbol.upper(),
-        rest_base=rb,
-        coin_m_prefix=pref,
+        rest_base=bcfg.rest_base,
+        api_prefix=bcfg.api_prefix,
         klines_limit=int(args_local.limit),
     )
 
-    print(f"symbol={args_local.symbol.upper()} REST={rb}")
+    print(f"symbol={args_local.symbol.upper()} product={bcfg.product} REST={bcfg.rest_base}")
     print(f"signal={sig.side.value} mixed_score={sig.score:.4f}")
     joined = "".join(
         f" {tf}={sig.score_by_interval.get(tf, float('nan')):+.4f}" for tf in ("4h", "1h", "15m")
@@ -84,13 +89,13 @@ def _cmd_coinm_signed_smoke(project_root: Path, argv: list[str]) -> int:
         "--config",
         type=Path,
         default=project_root / "config/settings.yaml",
-        help="读取 binance.rest_base / recv_window_ms / coin_m_prefix / secrets.file",
+        help="读取 binance.rest_base / recv_window_ms / api_prefix / product / secrets.file",
     )
     _add_secrets_file_argument(ap)
     ap.add_argument(
         "--symbol",
         required=True,
-        help="合约例如 DOGEUSD_PERP（需与 exchangeInfo 一致）",
+        help="合约例如 DOGEUSDT（需与 exchangeInfo 一致）",
     )
     ap.add_argument(
         "--leverage",
@@ -107,10 +112,11 @@ def _cmd_coinm_signed_smoke(project_root: Path, argv: list[str]) -> int:
     else:
         settings = {}
 
-    b = settings.get("binance", {}) if isinstance(settings.get("binance"), dict) else {}
-    rest_base = str(b.get("rest_base", "https://testnet.binancefuture.com"))
-    coin_m_prefix = str(b.get("coin_m_prefix", "/dapi/v1"))
-    recv_window_ms = int(b.get("recv_window_ms", 5000))
+    try:
+        bcfg = parse_binance_settings(settings)
+    except BinanceConfigError as exc:
+        print(f"[coinm-signed-smoke] {exc}", file=sys.stderr)
+        return 2
 
     from roll.secrets import SecretsError, load_binance_credentials
 
@@ -126,9 +132,9 @@ def _cmd_coinm_signed_smoke(project_root: Path, argv: list[str]) -> int:
         return 2
 
     outcome = run_signed_testnet_acceptance(
-        rest_base=rest_base,
-        coin_m_prefix=coin_m_prefix,
-        recv_window_ms=recv_window_ms,
+        rest_base=bcfg.rest_base,
+        api_prefix=bcfg.api_prefix,
+        recv_window_ms=bcfg.recv_window_ms,
         symbol=args_sm.symbol,
         leverage_to_set=args_sm.leverage,
         api_key=api_key,
@@ -214,8 +220,8 @@ def _cmd_backtest(project_root: Path, argv: list[str]) -> int:
         run_parameter_sensitivity,
         summarize_sensitivity,
     )
+    from roll.binance_config import BinanceConfigError, parse_binance_settings
     from roll.binance_client import (
-        BinanceClientConfig,
         BinanceCoinMClient,
         InsufficientMonitorableSymbolsError,
         select_monitorable_coin_m_symbols,
@@ -235,14 +241,14 @@ def _cmd_backtest(project_root: Path, argv: list[str]) -> int:
         "--config",
         type=Path,
         default=project_root / "config/settings.yaml",
-        help="读取 candidates / strategy / trend_model / risk / binance.coin_m_prefix",
+        help="读取 candidates / strategy / trend_model / risk / binance.api_prefix",
     )
     ap.add_argument("--days", type=float, default=180.0, help="回测区间长度（天，自当前 UTC 往前推）")
     ap.add_argument(
         "--public-rest",
         type=str,
-        default="https://dapi.binance.com",
-        help="公共 REST base（默认实盘 dapi；可用 settings.strategy.public_rest_base 覆盖）",
+        default="https://fapi.binance.com",
+        help="公共 REST base（默认 USD-M 实盘 fapi；可用 settings.strategy.public_rest_base 覆盖）",
     )
     ap.add_argument("--fee-bps", type=float, default=5.0, help="每边 taker 手续费（基点），往返自动 ×2 计入")
     ap.add_argument("--slippage-bps", type=float, default=2.0, help="买卖滑点（基点，不利方向）")
@@ -274,11 +280,14 @@ def _cmd_backtest(project_root: Path, argv: list[str]) -> int:
     if isinstance(prb, str) and prb.strip():
         pub = prb.strip()
 
-    b = settings.get("binance", {}) if isinstance(settings.get("binance"), dict) else {}
-    coin_m_prefix = str(b.get("coin_m_prefix", "/dapi/v1"))
+    try:
+        bcfg = parse_binance_settings(settings)
+    except BinanceConfigError as exc:
+        print(f"[backtest] {exc}", file=sys.stderr)
+        return 2
 
     client = BinanceCoinMClient(
-        BinanceClientConfig(rest_base=pub.rstrip("/"), coin_m_prefix=coin_m_prefix),
+        bcfg.to_client_config(rest_base=pub.rstrip("/")),
     )
     client.sync_server_time()
 
@@ -353,7 +362,8 @@ def _cmd_backtest(project_root: Path, argv: list[str]) -> int:
 def _cmd_run_loop(project_root: Path, argv: list[str]) -> int:
     """策略主循环：默认 dry-run；`--no-dry-run` 在 environment-aware 守卫放行后 Signed 自动交易闭环。"""
 
-    from roll.binance_client import BinanceClientConfig, BinanceCoinMClient, InsufficientMonitorableSymbolsError
+    from roll.binance_config import BinanceConfigError, parse_binance_settings
+    from roll.binance_client import BinanceCoinMClient, InsufficientMonitorableSymbolsError
     from roll.logger import get_logger
     from roll.strategy_loop import (
         parse_strategy_loop_params,
@@ -391,8 +401,8 @@ def _cmd_run_loop(project_root: Path, argv: list[str]) -> int:
         "--no-dry-run",
         action="store_true",
         help=(
-            "COIN-M signed 自动下单：environment=testnet 须 Testnet host + testnet_signed_orders_enabled；"
-            "environment=live 须 https://dapi.binance.com + live_trading_enabled；均需密钥。"
+            "USD-M signed 自动下单：environment=testnet 须 Testnet host + testnet_signed_orders_enabled；"
+            "environment=live 须 https://fapi.binance.com + live_trading_enabled；均需密钥。"
         ),
     )
     ap.add_argument(
@@ -416,10 +426,13 @@ def _cmd_run_loop(project_root: Path, argv: list[str]) -> int:
 
         params = replace(params, loop_interval_sec=max(float(args_loop.interval_sec), 1.0))
 
-    b = settings.get("binance", {}) if isinstance(settings.get("binance"), dict) else {}
-    rest_base_signed = str(b.get("rest_base", "https://testnet.binancefuture.com"))
-    coin_m_prefix = str(b.get("coin_m_prefix", "/dapi/v1"))
-    recv_window_ms = int(b.get("recv_window_ms", 5000))
+    try:
+        bcfg = parse_binance_settings(settings)
+    except BinanceConfigError as exc:
+        print(f"[run-loop] {exc}", file=sys.stderr)
+        return 2
+
+    rest_base_signed = bcfg.rest_base
 
     rest_public = rest_base_signed
     if params.public_rest_base:
@@ -444,6 +457,8 @@ def _cmd_run_loop(project_root: Path, argv: list[str]) -> int:
             signed_environment = assert_signed_trading_allowed(
                 environment=str(settings.get("environment", "testnet")),
                 rest_base=rest_base_signed,
+                api_prefix=bcfg.api_prefix,
+                product=bcfg.product,
                 testnet_signed_orders_enabled=params.testnet_signed_orders_enabled,
                 live_trading_enabled=params.live_trading_enabled,
                 command_label="run-loop",
@@ -471,10 +486,7 @@ def _cmd_run_loop(project_root: Path, argv: list[str]) -> int:
                 print("[run-loop] 自动交易中 strategy.public_rest_base 必须与 binance.rest_base 相同或删除该字段。", file=sys.stderr)
                 return 2
 
-        cfg_s = BinanceClientConfig(
-            rest_base=rest_base_signed,
-            coin_m_prefix=coin_m_prefix,
-            recv_window_ms=recv_window_ms,
+        cfg_s = bcfg.to_client_config(
             api_key=api_key_ck,
             api_secret=api_secret_cs,
         )
@@ -519,11 +531,7 @@ def _cmd_run_loop(project_root: Path, argv: list[str]) -> int:
             )
 
     client = BinanceCoinMClient(
-        BinanceClientConfig(
-            rest_base=rest_public,
-            coin_m_prefix=coin_m_prefix,
-            recv_window_ms=recv_window_ms,
-        ),
+        bcfg.to_client_config(rest_base=rest_public),
     )
 
     log.info(
@@ -594,7 +602,8 @@ def _cmd_run_loop(project_root: Path, argv: list[str]) -> int:
 
 
 def _cmd_reconcile_state(project_root: Path, argv: list[str]) -> int:
-    from roll.binance_client import BinanceClientConfig, BinanceCoinMSignedClient
+    from roll.binance_config import BinanceConfigError, parse_binance_settings
+    from roll.binance_client import BinanceCoinMSignedClient
     from roll.position_manager import bootstrap_position_manager_from_exchange_client
     from roll.signed_guard import ReconcileStateGuardError, assert_reconcile_rest_host_allowed
     from roll.state_store import RuntimeState
@@ -602,9 +611,9 @@ def _cmd_reconcile_state(project_root: Path, argv: list[str]) -> int:
     ap = argparse.ArgumentParser(
         prog="python -m main reconcile-state",
         description=(
-            "Binance COIN-M Testnet 或 live 启动对账：拉取全局 positionRisk + openOrders，"
+            "Binance USD-M Testnet 或 live 启动对账：拉取全局 positionRisk + openOrders，"
             "以交易所快照恢复单标的交易锁；检测到多标的持仓/跨标的挂单或异常状态时挂起自动交易。"
-            "REST host 须与配置 environment 一致（testnet → Testnet host，live → https://dapi.binance.com）。"
+            "REST host 须与配置 environment 一致（testnet → Testnet host，live → https://fapi.binance.com）。"
         ),
     )
     ap.add_argument(
@@ -627,16 +636,21 @@ def _cmd_reconcile_state(project_root: Path, argv: list[str]) -> int:
         print(f"[reconcile-state] 配置不存在或为空: {cfg_path}", file=sys.stderr)
         return 2
 
+    try:
+        bcfg = parse_binance_settings(settings)
+    except BinanceConfigError as exc:
+        print(f"[reconcile-state] {exc}", file=sys.stderr)
+        return 2
+
     environment_raw = settings.get("environment")
-    b = settings.get("binance", {}) if isinstance(settings.get("binance"), dict) else {}
-    rest_base = str(b.get("rest_base", "https://testnet.binancefuture.com"))
-    coin_m_prefix = str(b.get("coin_m_prefix", "/dapi/v1"))
-    recv_window_ms = int(b.get("recv_window_ms", 5000))
+    rest_base = bcfg.rest_base
 
     try:
         environment = assert_reconcile_rest_host_allowed(
             environment=str(environment_raw) if environment_raw is not None else None,
             rest_base=rest_base,
+            api_prefix=bcfg.api_prefix,
+            product=bcfg.product,
         )
     except ReconcileStateGuardError as exc:
         print(f"[reconcile-state] {exc}", file=sys.stderr)
@@ -654,10 +668,7 @@ def _cmd_reconcile_state(project_root: Path, argv: list[str]) -> int:
         print(f"[reconcile-state] {exc}", file=sys.stderr)
         return 2
 
-    cfg = BinanceClientConfig(
-        rest_base=rest_base,
-        coin_m_prefix=coin_m_prefix,
-        recv_window_ms=recv_window_ms,
+    cfg = bcfg.to_client_config(
         api_key=creds.api_key,
         api_secret=creds.api_secret,
     )
@@ -669,7 +680,9 @@ def _cmd_reconcile_state(project_root: Path, argv: list[str]) -> int:
     ord_syms = sorted(outcome.order_symbols)
 
     print(f"environment={environment}")
+    print(f"product={bcfg.product}")
     print(f"rest_base={rest_base}")
+    print(f"api_prefix={bcfg.api_prefix}")
     print(f"sync_server_offset_ms≈{sync_ms}")
     print(f"positionRisk_rows={n_pos} openOrders_rows={n_ord}")
     print(f"nonzero_position_symbols={pos_syms}")
@@ -721,7 +734,7 @@ def main(argv: list[str] | None = None) -> int:
     if argv[:1] == ["run-loop"]:
         return _cmd_run_loop(project_root, argv[1:])
 
-    parser = argparse.ArgumentParser(description="Binance COIN-M 滚仓系统入口")
+    parser = argparse.ArgumentParser(description="Binance USD-M 滚仓系统入口")
     parser.add_argument(
         "--config",
         type=Path,
@@ -732,6 +745,7 @@ def main(argv: list[str] | None = None) -> int:
 
     import yaml
 
+    from roll.binance_config import BinanceConfigError, parse_binance_settings
     from roll.logger import get_logger
 
     log = get_logger("main")
@@ -743,25 +757,33 @@ def main(argv: list[str] | None = None) -> int:
 
     raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
     settings = raw if isinstance(raw, dict) else {}
+    try:
+        bcfg = parse_binance_settings(settings)
+    except BinanceConfigError as exc:
+        log.error("%s", exc)
+        return 2
+
     log.info(
-        "已加载配置 environment=%s rest_base=%s",
+        "已加载配置 environment=%s product=%s rest_base=%s api_prefix=%s",
         settings.get("environment"),
-        settings.get("binance", {}).get("rest_base"),
+        bcfg.product,
+        bcfg.rest_base,
+        bcfg.api_prefix,
     )
     log.info(
         "Testnet signed 主循环（须 strategy.testnet_signed_orders_enabled=true）："
         "`python -m main reconcile-state --secrets-file config/secrets/testnet.env` 对账后 "
         "`python -m main run-loop --no-dry-run --secrets-file config/secrets/testnet.env`（Testnet）；"
-        "live 须 environment=live、rest_base=https://dapi.binance.com、live_trading_enabled=true。",
+        "live 须 environment=live、rest_base=https://fapi.binance.com、live_trading_enabled=true。",
     )
     log.info(
         "策略 dry-run 主循环：`python -m main run-loop --once`（默认公有 REST，不下单）。"
     )
     log.info("历史回测与参数校准：`conda activate roll-env` 后 `python -m main backtest --days 180`")
-    log.info("运行 `python -m main trend-offline --symbol YOUR_PERP_SYMBOL` 可离线验收趋势模型。")
+    log.info("运行 `python -m main trend-offline --symbol DOGEUSDT` 可离线验收趋势模型。")
     log.info(
         "Testnet Signed 验收："
-        "`python -m main coinm-signed-smoke --secrets-file config/secrets/testnet.env --symbol YOUR_PERP`"
+        "`python -m main coinm-signed-smoke --secrets-file config/secrets/testnet.env --symbol DOGEUSDT`"
         "（或配置 secrets.file / 环境变量 BINANCE_*）。",
     )
     return 0

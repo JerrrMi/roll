@@ -162,7 +162,7 @@ def evaluate_candidates_with_public_rest(
 
     outcomes: list[tuple[str, TrendSignal]] = []
     rb = client.config.rest_base
-    pref = client.config.coin_m_prefix
+    pref = client.config.api_prefix
     model = TrendModel(trend_params) if trend_params is not None else TrendModel()
 
     for spec in specs:
@@ -170,7 +170,7 @@ def evaluate_candidates_with_public_rest(
         sig = evaluate_symbol_offline_public(
             sym,
             rest_base=rb,
-            coin_m_prefix=pref,
+            api_prefix=pref,
             model=model,
             klines_limit=params.klines_limit,
             intervals=intervals,

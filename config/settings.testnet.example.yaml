@@ -1,4 +1,4 @@
-# Binance COIN-M Futures — Testnet 自动交易示例配置
+# Binance USD-M Futures — Testnet 自动交易示例配置
 # 复制为本地配置（勿提交 Git）：
 #   cp config/settings.testnet.example.yaml config/settings.testnet.yaml
 # 配合密钥：cp config/secrets/testnet.env.example config/secrets/testnet.env
@@ -9,8 +9,9 @@ secrets:
   file: "./config/secrets/testnet.env"
 
 binance:
+  product: "usdm"
   rest_base: "https://testnet.binancefuture.com"
-  coin_m_prefix: "/dapi/v1"
+  api_prefix: "/fapi/v1"
   recv_window_ms: 5000
 
 candidates:
@@ -40,8 +41,8 @@ strategy:
   stop_adverse_fraction: 0.05
   kelly_p: 0.55
   kelly_b: 1.2
-  # dry-run 时若 Testnet 候选不足，可仅读行情使用实盘公共 REST（勿与 Testnet signed 混用）：
-  # public_rest_base: "https://dapi.binance.com"
+  # dry-run 时若 Testnet 候选不足，可仅读行情使用 USD-M 实盘公共 REST（勿与 Testnet signed 混用）：
+  # public_rest_base: "https://fapi.binance.com"
 
 logging:
   level: INFO

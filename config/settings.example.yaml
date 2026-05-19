@@ -1,5 +1,5 @@
-# Binance COIN-M Futures — 通用示例（历史兼容）
-# 2.0 推荐按环境拆分，请优先使用：
+# Binance USD-M Futures — 通用示例
+# 3.0 推荐按环境拆分，请优先使用：
 #   config/settings.testnet.example.yaml → config/settings.testnet.yaml
 #   config/settings.live.example.yaml   → config/settings.live.yaml
 # 详见 README「配置文件」。
@@ -10,15 +10,16 @@ secrets:
   file: "./config/secrets/testnet.env"
 
 binance:
-  # 官方 Testnet（COIN-M 与 USD-M 共用该 host；路径区分 /dapi vs /fapi）
+  product: "usdm"
+  # 官方 Futures Testnet（USD-M 与 COIN-M 共用 host；路径须用 /fapi 而非 /dapi）
   rest_base: "https://testnet.binancefuture.com"
-  coin_m_prefix: "/dapi/v1"
-  # 实盘示例（勿在 Testnet 任务中误用）
-  # rest_base: "https://dapi.binance.com"
-  # coin_m_prefix: "/dapi/v1"
+  api_prefix: "/fapi/v1"
+  # 实盘 USD-M 示例（勿在 Testnet 任务中误用）
+  # rest_base: "https://fapi.binance.com"
+  # api_prefix: "/fapi/v1"
   recv_window_ms: 5000
 
-# 人类可读资产代码；运行时需通过 exchangeInfo 映射到实际 COIN-M symbol（实现于后续阶段）
+# 人类可读资产代码；运行时需通过 USD-M exchangeInfo 映射到 USDT 永续 symbol（如 DOGEUSDT）
 candidates:
   - DOGE
   - AVAX
@@ -40,7 +41,7 @@ timeframes:
 strategy:
   # 安全开关：默认 false；仅在为 Testnet 验收真实挂单时改为 true
   testnet_signed_orders_enabled: false
-  # 实盘 signed 自动交易：默认 false；当前程序未接入实盘 REST 下单，切勿仅凭此项误以为已开实盘
+  # 实盘 signed 自动交易：默认 false；须完整审查配置、密钥权限与对账结果后才可改为 true
   live_trading_enabled: false
   loop_interval_sec: 120
   klines_limit: 600
@@ -53,11 +54,11 @@ strategy:
   # 可选：追踪 STOP（仍需满足初始底价 stop_adverse_fraction）；自动交易时需与 binance.rest_base 同源行情
   # trail_stop_fraction: 0.02
   # Live 模式下 public_rest_base 必须与 binance.rest_base 完全一致；dry-run-only 可看实盘公共行情：
-  # public_rest_base: "https://dapi.binance.com"
+  # public_rest_base: "https://fapi.binance.com"
 
 # 趋势评分模型默认值见代码 `TrendModelParams`；离线验收：
 #   conda activate roll-env
-#   python -m main trend-offline --symbol DOGEUSD_PERP --limit 600
+#   python -m main trend-offline --symbol DOGEUSDT --limit 600
 
 logging:
   level: INFO

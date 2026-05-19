@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from roll.binance_client import BinanceClientConfig, BinanceCoinMClient
+from roll.binance_config import parse_binance_settings
 from roll.trend_model import Candle, TrendModel, TrendModelParams, TrendSignal, parse_binance_klines
 
 
@@ -12,7 +13,7 @@ def evaluate_symbol_offline_public(
     symbol: str,
     *,
     rest_base: str,
-    coin_m_prefix: str = "/dapi/v1",
+    api_prefix: str = "/fapi/v1",
     model: TrendModel | None = None,
     klines_limit: int = 600,
     intervals: tuple[str, ...] = ("15m", "1h", "4h"),
@@ -20,7 +21,7 @@ def evaluate_symbol_offline_public(
     """仅使用公共 REST：`GET /klines`，适合历史样本验收。"""
     m = model or TrendModel()
     cli = BinanceCoinMClient(
-        BinanceClientConfig(rest_base=rest_base, coin_m_prefix=coin_m_prefix),
+        BinanceClientConfig(rest_base=rest_base, api_prefix=api_prefix),
     )
 
     buckets: dict[str, list[Candle]] = {}
@@ -39,9 +40,6 @@ def evaluate_symbol_offline_public(
 
 
 def settings_to_offline_urls(settings: Mapping[str, Any]) -> tuple[str, str]:
-    b = settings.get("binance", {})
-    if not isinstance(b, Mapping):
-        return BinanceClientConfig().rest_base, BinanceClientConfig().coin_m_prefix
-    rb = str(b.get("rest_base", BinanceClientConfig().rest_base))
-    pref = str(b.get("coin_m_prefix", BinanceClientConfig().coin_m_prefix))
-    return rb, pref
+    """返回 (rest_base, api_prefix)。"""
+    bcfg = parse_binance_settings(settings)
+    return bcfg.rest_base, bcfg.api_prefix

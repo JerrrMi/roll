@@ -18,8 +18,8 @@ def _sig(side: SignalSide, score: float) -> TrendSignal:
 
 
 def test_parse_strategy_loop_public_rest_base() -> None:
-    p = parse_strategy_loop_params({"strategy": {"public_rest_base": " https://dapi.binance.com "}})
-    assert p.public_rest_base == "https://dapi.binance.com"
+    p = parse_strategy_loop_params({"strategy": {"public_rest_base": " https://fapi.binance.com "}})
+    assert p.public_rest_base == "https://fapi.binance.com"
 
 
 def test_rank_directional_signals_orders_by_abs_score() -> None:

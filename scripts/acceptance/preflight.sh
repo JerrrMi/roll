@@ -82,8 +82,16 @@ tn_rb = (tn.get("binance") or {}).get("rest_base", "")
 lv_rb = (lv.get("binance") or {}).get("rest_base", "")
 if "testnet.binancefuture.com" not in str(tn_rb):
     print(f"WARN: Testnet rest_base 异常: {tn_rb!r}", file=sys.stderr)
-if "dapi.binance.com" not in str(lv_rb):
-    print(f"WARN: live rest_base 应为 dapi.binance.com: {lv_rb!r}", file=sys.stderr)
+if "fapi.binance.com" not in str(lv_rb):
+    print(f"WARN: live rest_base 应为 fapi.binance.com: {lv_rb!r}", file=sys.stderr)
+
+tn_prefix = (tn.get("binance") or {}).get("api_prefix", "")
+lv_prefix = (lv.get("binance") or {}).get("api_prefix", "")
+if "dapi" in str(tn_prefix).lower() or "dapi" in str(lv_prefix).lower():
+    print("FAIL: api_prefix 不得含 /dapi（COIN-M）", file=sys.stderr)
+    fail = True
+if tn.get("binance", {}).get("product") != "usdm" or lv.get("binance", {}).get("product") != "usdm":
+    print("WARN: binance.product 建议均为 usdm", file=sys.stderr)
 
 if strat(lv, "live_trading_enabled"):
     print("INFO: live_trading_enabled=true（阶段 4 signed 需要；阶段 2 dry-run 应暂时为 false）")

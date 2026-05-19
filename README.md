@@ -1,6 +1,6 @@
-# 滚仓交易系统（Binance COIN-M Futures）
+# 滚仓交易系统（Binance USD-M Futures / U 本位 USDT 永续）
 
-Python 单体策略框架：**监测多候选标的，任一时刻最多交易一个标的**。支持 dry-run、`run-loop` Testnet signed 闭环（显式开启）、回测与离线趋势验收。
+Python 单体策略框架：**监测多候选标的，任一时刻最多交易一个标的**。默认交易产品为 **Binance USD-M USDT 永续**（`/fapi/v1`）。支持 dry-run、`run-loop` Testnet signed 闭环（显式开启）、回测与离线趋势验收。
 
 **每一条终端命令在执行前都必须先激活 Conda 环境：**
 
@@ -58,14 +58,15 @@ cp config/settings.example.yaml config/settings.yaml
 
 ### 隔离要点（防混用）
 
-- Testnet 的 `binance.rest_base` 必须为 `https://testnet.binancefuture.com`；live 必须为 `https://dapi.binance.com`。
+- `binance.product` 必须为 **`usdm`**；`binance.api_prefix` 必须为 **`/fapi/v1`**（勿使用已废弃的 `coin_m_prefix` 或 `/dapi`）。
+- Testnet 的 `binance.rest_base` 必须为 `https://testnet.binancefuture.com`；live 必须为 `https://fapi.binance.com`（**不是** `dapi.binance.com`）。
 - `secrets.file` 与 `--secrets-file` 必须与环境一致（Testnet 用 `testnet.env`，live 用 `live.env`）。
 - `state.path` 必须指向各自 JSON（`roll_state_testnet.json` / `roll_state_live.json`）。
 - `strategy.live_trading_enabled` 在示例中**默认为 false**；仅在你完整审查配置、密钥权限与对账结果后，才可在 live 配置中改为 `true`。
 
 ## Binance API 密钥（本地文件，推荐）
 
-在 Binance **Futures Testnet** 创建 COIN-M 可用的 Key（**不要**开启提现）。实盘 Key 须单独创建、**禁止提现**，并建议 IP 白名单。
+在 Binance **Futures Testnet** 创建 **USD-M（U 本位合约）** 可用的 Key（**不要**开启提现）。实盘 Key 须单独创建、**禁止提现**，并建议 IP 白名单；须具备 USD-M Futures 权限。
 
 ```bash
 conda activate roll-env
@@ -87,7 +88,7 @@ chmod 600 config/secrets/testnet.env   # Linux/macOS
 | --- | --- |
 | **dry-run（默认）** | `python -m main run-loop --config config/settings.testnet.yaml`：只拉行情、打印决策，**不发 signed 单**。 |
 | **Testnet 真实挂单** | 需 **CLI** `--no-dry-run` **且** `strategy.testnet_signed_orders_enabled: true` **且** Testnet `rest_base` **且** Testnet 密钥/配置。 |
-| **实盘自动交易（live）** | 须 **`environment: live`**、`rest_base=https://dapi.binance.com`、**`live_trading_enabled: true`**、CLI **`--no-dry-run`**、live 专用 **`secrets`/`state.path`**；启动时自动对账；**同一账户仅允许一个 live 进程**（见下文）。 |
+| **实盘自动交易（live）** | 须 **`environment: live`**、`product=usdm`、`rest_base=https://fapi.binance.com`、`api_prefix=/fapi/v1`、**`live_trading_enabled: true`**、CLI **`--no-dry-run`**、live 专用 **`secrets`/`state.path`**；启动时自动对账；**同一账户仅允许一个 live 进程**（见下文）。 |
 
 自动交易若配置了 `strategy.public_rest_base`，则其必须与 `binance.rest_base` 相同；dry-run 可用实盘公共 REST 仅读行情时参见 Testnet 示例 YAML 注释。
 
@@ -127,21 +128,23 @@ python -m main run-loop --config config/settings.live.yaml --secrets-file config
 
 **live signed 持续运行：** 将上式去掉 `--once`；**不要**同时再开一个前台 `run-loop --no-dry-run` 或第二个 `roll-live.service`——程序会在 `data/roll_state_live.json.lock` 上互斥，第二个进程会拒绝启动。
 
-**停止与确认无持仓：** 在运行循环的终端 **Ctrl+C**；然后对当前环境执行 `reconcile-state`（带上对应的 `--config` 与 `--secrets-file`），检查 `nonzero_position_symbols=[]`。手动平仓请在对应 Binance **COIN-M** 环境（Testnet 或实盘）网页撤单并市价平仓。
+**停止与确认无持仓：** 在运行循环的终端 **Ctrl+C**；然后对当前环境执行 `reconcile-state`（带上对应的 `--config` 与 `--secrets-file`），检查 `nonzero_position_symbols=[]`。手动平仓请在对应 Binance **USD-M / U 本位合约** 环境（Testnet 或实盘）网页撤单并市价平仓。
 
-**其他：** `python -m main trend-offline --symbol DOGEUSD_PERP`、`python -m main backtest --days 180`、`python -m main coinm-signed-smoke --symbol DOGEUSD_PERP`。
+**其他：** `python -m main trend-offline --symbol DOGEUSDT`、`python -m main backtest --days 180`、`python -m main coinm-signed-smoke --symbol DOGEUSDT`。
 
-## 验收：不会混用状态与密钥
+## 验收：不会混用状态、密钥与 COIN-M（dapi）
 
-1. 打开 `config/settings.testnet.yaml` 与 `config/settings.live.yaml`，确认 `secrets.file` 与 `state.path` 两两不同。
-2. 分别运行（仅对账、不下单）：
+1. 打开 `config/settings.testnet.yaml` 与 `config/settings.live.yaml`，确认 `secrets.file` 与 `state.path` 两两不同，且 `binance.product=usdm`、`api_prefix=/fapi/v1`。
+2. 确认示例与本地配置**不含** `coin_m_prefix`、`dapi.binance.com` 或 `/dapi/v1`。
+3. 分别运行（仅对账、不下单）：
    ```bash
    conda activate roll-env
    python -m main reconcile-state --config config/settings.testnet.yaml --secrets-file config/secrets/testnet.env
    python -m main reconcile-state --config config/settings.live.yaml --secrets-file config/secrets/live.env
    ```
 3. 确认生成/更新的是 `data/roll_state_testnet.json` 与 `data/roll_state_live.json`（两个文件，互不覆盖）。
-4. 故意交叉（例如在 Testnet 命令加 `--secrets-file config/secrets/live.env`）时，应对账到错误环境或鉴权失败——**不要**在生产中这样运行；正常运维应始终让 `--config`、`secrets.file` 与 `--secrets-file` 同属一个环境。
+4. 运行 `pytest tests/test_binance_config.py tests/test_signed_guard.py`：旧 `coin_m_prefix`、live `dapi` host、`/dapi/v1` 前缀应被拒绝。
+5. 故意交叉（例如在 Testnet 命令加 `--secrets-file config/secrets/live.env`）时，应对账到错误环境或鉴权失败——**不要**在生产中这样运行；正常运维应始终让 `--config`、`secrets.file` 与 `--secrets-file` 同属一个环境。
 
 ## Ubuntu 云服务器：systemd 托管
 
@@ -226,7 +229,7 @@ bash scripts/acceptance/preflight.sh
 ## 文档
 
 - 1.0 设计与操作：`docs/滚仓系统实现的plan文档.md` §11–§12。
-- 2.0 实盘与部署计划：`docs/滚仓系统实现的plan文档2.0版本.md`。
+- 3.0 USD-M 迁移计划：`docs/滚仓系统实现的plan文档3.0版本.md`。
 - **Live 最终验收**：`docs/live-go-live-acceptance.md`。
 - systemd 安装细节：`deploy/systemd/README.md`。
 

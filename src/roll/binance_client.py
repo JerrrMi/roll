@@ -1,9 +1,9 @@
-"""Binance COIN-M Futures public REST client (default Testnet).
+"""Binance USD-M Futures public REST client (default Testnet).
 
-覆盖 GET /dapi/v1：ping、time、exchangeInfo、klines、ticker/price；
+覆盖 GET /fapi/v1：ping、time、exchangeInfo、klines、ticker/price；
 支持服务器时间偏移估算与 exchangeInfo 动态解析；候选资产筛选（精确 baseAsset 匹配）。
 
-Signed API：`BinanceCoinMSignedClient`，HMAC SHA256 + timestamp + recvWindow；
+Signed API：`BinanceCoinMSignedClient`（类名历史保留），HMAC SHA256 + timestamp + recvWindow；
 不得将 API Secret 写入日志或通过 __repr__ 暴露（见 BinanceClientConfig）。
 """
 
@@ -21,11 +21,12 @@ from urllib.parse import parse_qsl, urlencode, urlunparse, urlparse
 from urllib.request import Request, urlopen
 
 DEFAULT_TESTNET_REST_BASE = "https://testnet.binancefuture.com"
-DEFAULT_LIVE_REST_BASE = "https://dapi.binance.com"
-DEFAULT_COIN_M_PREFIX = "/dapi/v1"
+DEFAULT_LIVE_REST_BASE = "https://fapi.binance.com"
+DEFAULT_API_PREFIX = "/fapi/v1"
+DEFAULT_PRODUCT = "usdm"
 
 BINANCE_ALLOWED_TESTNET_HOSTS = frozenset({"testnet.binancefuture.com"})
-BINANCE_ALLOWED_LIVE_HOSTS = frozenset({"dapi.binance.com"})
+BINANCE_ALLOWED_USDM_LIVE_HOSTS = frozenset({"fapi.binance.com"})
 
 
 class BinanceHTTPError(RuntimeError):
@@ -124,8 +125,8 @@ def redact_signed_query_url(url: str) -> str:
     return urlunparse((p.scheme, p.netloc, p.path, p.params, urlencode(q), p.fragment))
 
 
-def is_binance_coin_m_testnet_url(rest_base_url: str) -> bool:
-    """是否指向官方 Futures Testnet host（COIN-M / USD-M 共用该 host）。
+def is_binance_futures_testnet_url(rest_base_url: str) -> bool:
+    """是否指向官方 Futures Testnet host（USD-M / COIN-M 共用该 host）。
 
     为降低明文传输风险：仅 **https** 且 hostname 精确匹配时返回 True。
     """
@@ -136,8 +137,8 @@ def is_binance_coin_m_testnet_url(rest_base_url: str) -> bool:
     return host in BINANCE_ALLOWED_TESTNET_HOSTS
 
 
-def is_binance_coin_m_live_url(rest_base_url: str) -> bool:
-    """是否指向官方 COIN-M 实盘 REST host（https://dapi.binance.com）。
+def is_binance_usdm_live_url(rest_base_url: str) -> bool:
+    """是否指向官方 USD-M 实盘 REST host（https://fapi.binance.com）。
 
     为降低明文传输风险：仅 **https** 且 hostname 精确匹配时返回 True。
     """
@@ -145,13 +146,24 @@ def is_binance_coin_m_live_url(rest_base_url: str) -> bool:
     host = (parsed.hostname or "").lower()
     if parsed.scheme.lower() != "https":
         return False
-    return host in BINANCE_ALLOWED_LIVE_HOSTS
+    return host in BINANCE_ALLOWED_USDM_LIVE_HOSTS
+
+
+def is_binance_coin_m_testnet_url(rest_base_url: str) -> bool:
+    """兼容别名：同 `is_binance_futures_testnet_url`。"""
+    return is_binance_futures_testnet_url(rest_base_url)
+
+
+def is_binance_coin_m_live_url(rest_base_url: str) -> bool:
+    """已废弃：COIN-M live host；3.0 请使用 `is_binance_usdm_live_url`。"""
+    return is_binance_usdm_live_url(rest_base_url)
 
 
 @dataclass
 class BinanceClientConfig:
+    product: str = DEFAULT_PRODUCT
     rest_base: str = DEFAULT_TESTNET_REST_BASE
-    coin_m_prefix: str = DEFAULT_COIN_M_PREFIX
+    api_prefix: str = DEFAULT_API_PREFIX
     api_key: str | None = field(default=None, repr=False)
     api_secret: str | None = field(default=None, repr=False)
     recv_window_ms: int = 5000
@@ -382,7 +394,7 @@ def select_monitorable_coin_m_symbols(
 
 
 class BinanceCoinMClient:
-    """COIN-M Futures 公共 REST 封装（默认连 Testnet）。"""
+    """USD-M Futures 公共 REST 封装（默认连 Testnet；类名历史保留）。"""
 
     def __init__(self, config: BinanceClientConfig | None = None) -> None:
         self._config = config or BinanceClientConfig()
@@ -403,7 +415,7 @@ class BinanceCoinMClient:
 
     def _build_rest_url(self, path: str, query: str | None = None) -> str:
         base = self._config.rest_base.rstrip("/")
-        prefix = self._config.coin_m_prefix.rstrip("/")
+        prefix = self._config.api_prefix.rstrip("/")
         full_path = f"{prefix}{path}" if prefix else path
         if not full_path.startswith("/"):
             full_path = "/" + full_path
@@ -477,11 +489,11 @@ class BinanceCoinMClient:
         return self._http_json_request(method, url, send_api_key_if_configured=True)
 
     def ping(self) -> None:
-        """GET /dapi/v1/ping"""
+        """GET /fapi/v1/ping"""
         self._request_json("GET", "/ping")
 
     def fetch_server_time_ms(self) -> int:
-        """GET /dapi/v1/time — 返回 Binance serverTime（毫秒）。"""
+        """GET /fapi/v1/time — 返回 Binance serverTime（毫秒）。"""
         data = self._request_json("GET", "/time")
         if not isinstance(data, Mapping):
             raise BinanceHTTPError(f"unexpected /time payload: {data!r}")
@@ -503,7 +515,7 @@ class BinanceCoinMClient:
         return self._server_offset_ms
 
     def exchange_info(self) -> dict[str, Any]:
-        """GET /dapi/v1/exchangeInfo"""
+        """GET /fapi/v1/exchangeInfo"""
         data = self._request_json("GET", "/exchangeInfo")
         if not isinstance(data, Mapping):
             raise BinanceHTTPError(f"unexpected exchangeInfo payload: {type(data)}")
@@ -522,7 +534,7 @@ class BinanceCoinMClient:
         end_time_ms: int | None = None,
         limit: int = 500,
     ) -> list[list[Any]]:
-        """GET /dapi/v1/klines"""
+        """GET /fapi/v1/klines"""
         params: dict[str, Any] = {"symbol": symbol, "interval": interval, "limit": limit}
         if start_time_ms is not None:
             params["startTime"] = int(start_time_ms)
@@ -534,9 +546,9 @@ class BinanceCoinMClient:
         return data
 
     def ticker_price(self, symbol: str | None = None) -> list[dict[str, Any]]:
-        """GET /dapi/v1/ticker/price
+        """GET /fapi/v1/ticker/price
 
-        symbol 省略时返回全部 ticker（字段映射：symbol / pair(ps) / price / time）。
+        symbol 省略时返回全部 ticker（字段映射：symbol / price / time）。
         """
         params: dict[str, Any] = {}
         if symbol:
@@ -553,7 +565,7 @@ class BinanceCoinMClient:
         raise BinanceHTTPError(f"unexpected ticker/price payload: {type(data)}")
 
     def get_coin_m_spec(self, symbol: str) -> CoinMFuturesSymbol | None:
-        """exchangeInfo 中按 symbol（如 DOGEUSD_PERP）精确查找。"""
+        """exchangeInfo 中按 symbol（如 DOGEUSDT）精确查找。"""
         want = symbol.strip().upper()
         for spec in self.list_coin_m_specs():
             if spec.symbol.upper() == want:
@@ -574,7 +586,7 @@ class BinanceCoinMClient:
 
 
 class BinanceCoinMSignedClient(BinanceCoinMClient):
-    """Binance COIN-M Futures Signed REST（`/dapi/v1`）。
+    """Binance USD-M Futures Signed REST（`/fapi/v1`；类名历史保留）。
 
     - 必选配置：`BinanceClientConfig.api_key`、`api_secret`（不得写入日志）。
     - 每个请求附带 `timestamp`（基于 `estimated_server_time_ms()`）、`recvWindow` 与 `signature`（HMAC SHA256）。
@@ -593,7 +605,8 @@ class BinanceCoinMSignedClient(BinanceCoinMClient):
         return (
             "<BinanceCoinMSignedClient"
             f" rest_base={self._config.rest_base!r}"
-            f" coin_m_prefix={self._config.coin_m_prefix!r}"
+            f" product={self._config.product!r}"
+            f" api_prefix={self._config.api_prefix!r}"
             " credentials=(redacted)>"
         )
 

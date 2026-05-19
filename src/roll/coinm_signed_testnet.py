@@ -90,7 +90,7 @@ def _nonzero_positions(rows: list[dict[str, Any]], symbol: str) -> list[dict[str
 def run_signed_testnet_acceptance(
     *,
     rest_base: str,
-    coin_m_prefix: str,
+    api_prefix: str,
     recv_window_ms: int,
     symbol: str,
     leverage_to_set: int,
@@ -121,12 +121,12 @@ def run_signed_testnet_acceptance(
     sy = symbol.strip().upper()
     pub_cfg = BinanceClientConfig(
         rest_base=rest_base,
-        coin_m_prefix=coin_m_prefix,
+        api_prefix=api_prefix,
         recv_window_ms=recv_window_ms,
     )
     pub = BinanceCoinMClient(pub_cfg)
 
-    report(f"COIN-M Signed Testnet 验收 symbol={sy} REST={rest_base}")
+    report(f"USD-M Signed Testnet 验收 symbol={sy} REST={rest_base} api_prefix={api_prefix}")
 
     if not is_binance_coin_m_testnet_url(rest_base):
         bad(
@@ -149,7 +149,7 @@ def run_signed_testnet_acceptance(
 
     signed_cfg = BinanceClientConfig(
         rest_base=rest_base,
-        coin_m_prefix=coin_m_prefix,
+        api_prefix=api_prefix,
         recv_window_ms=recv_window_ms,
         api_key=ck,
         api_secret=cs,
@@ -187,25 +187,25 @@ def run_signed_testnet_acceptance(
             f"assets={len(assets)} positions_preview={len(poses)} feeTier={acct.get('feeTier')}",
         )
     except BinanceHTTPError as e:
-        bad("GET /account", _explain_http(e, endpoint="GET /dapi/v1/account", symbol=sy))
+        bad("GET /account", _explain_http(e, endpoint="GET /fapi/v1/account", symbol=sy))
 
     try:
         pr_before = signed.position_risk(symbol=sy)
         ok("GET /positionRisk(open)", f"rows={len(pr_before)} nonzero={len(_nonzero_positions(pr_before, sy))}")
     except BinanceHTTPError as e:
-        bad("GET /positionRisk(open)", _explain_http(e, endpoint="GET /dapi/v1/positionRisk", symbol=sy))
+        bad("GET /positionRisk(open)", _explain_http(e, endpoint="GET /fapi/v1/positionRisk", symbol=sy))
 
     try:
         oo0 = signed.open_orders(symbol=sy)
         ok("GET /openOrders(empty)", f"count={len(oo0)}")
     except BinanceHTTPError as e:
-        bad("GET /openOrders(empty)", _explain_http(e, endpoint="GET /dapi/v1/openOrders", symbol=sy))
+        bad("GET /openOrders(empty)", _explain_http(e, endpoint="GET /fapi/v1/openOrders", symbol=sy))
 
     try:
         lev = signed.set_leverage(symbol=sy, leverage=int(leverage_to_set))
         ok("POST /leverage", f"leverage_hint={lev.get('leverage', lev)} symbol={sy}")
     except BinanceHTTPError as e:
-        bad("POST /leverage", _explain_http(e, endpoint="POST /dapi/v1/leverage", symbol=sy))
+        bad("POST /leverage", _explain_http(e, endpoint="POST /fapi/v1/leverage", symbol=sy))
 
     spec = pub.get_coin_m_spec(sy)
     if spec is None:
@@ -234,14 +234,14 @@ def run_signed_testnet_acceptance(
             f"orderId={oid_open} status={mo.get('status')} avgPx={mo.get('avgPrice', mo.get('price'))}",
         )
     except BinanceHTTPError as e:
-        bad("POST /order(market_buy_open)", _explain_http(e, endpoint="POST /dapi/v1/order", symbol=sy))
+        bad("POST /order(market_buy_open)", _explain_http(e, endpoint="POST /fapi/v1/order", symbol=sy))
 
     if oid_open is not None:
         try:
             qo = signed.get_order(symbol=sy, order_id=oid_open)
             ok("GET /order(filled/open)", f"status={qo.get('status')} executedQty={qo.get('executedQty')}")
         except BinanceHTTPError as e:
-            bad("GET /order(filled/open)", _explain_http(e, endpoint="GET /dapi/v1/order", symbol=sy))
+            bad("GET /order(filled/open)", _explain_http(e, endpoint="GET /fapi/v1/order", symbol=sy))
 
     held = False
     try:
@@ -251,7 +251,7 @@ def run_signed_testnet_acceptance(
         mid_pos_ok = held
         ok("GET /positionRisk(after_buy)", f"nonzero_positions={len(nn)} held={held}")
     except BinanceHTTPError as e:
-        bad("GET /positionRisk(after_buy)", _explain_http(e, endpoint="GET /dapi/v1/positionRisk", symbol=sy))
+        bad("GET /positionRisk(after_buy)", _explain_http(e, endpoint="GET /fapi/v1/positionRisk", symbol=sy))
 
     try:
         cl = signed.close_symbol_position_market(symbol=sy)
@@ -261,14 +261,14 @@ def run_signed_testnet_acceptance(
             f"orderId={cl.get('orderId')} status={cl.get('status')}",
         )
     except BinanceHTTPError as e:
-        bad("POST /order(market_close_reduce_only)", _explain_http(e, endpoint="POST /dapi/v1/order(close)", symbol=sy))
+        bad("POST /order(market_close_reduce_only)", _explain_http(e, endpoint="POST /fapi/v1/order(close)", symbol=sy))
 
     try:
         pr_after = signed.position_risk(symbol=sy)
         flat_ok = len(_nonzero_positions(pr_after, sy)) == 0
         ok("GET /positionRisk(after_close)", f"flat={flat_ok} rows={len(pr_after)}")
     except BinanceHTTPError as e:
-        bad("GET /positionRisk(after_close)", _explain_http(e, endpoint="GET /dapi/v1/positionRisk", symbol=sy))
+        bad("GET /positionRisk(after_close)", _explain_http(e, endpoint="GET /fapi/v1/positionRisk", symbol=sy))
 
     loop_ok = open_ok and mid_pos_ok and close_ok and flat_ok
     if loop_ok:
@@ -304,7 +304,7 @@ def run_signed_testnet_acceptance(
             cx = signed.cancel_order(symbol=sy, order_id=lid)
             ok("DELETE /order", f"canceled_orderId={cx.get('orderId')} status={cx.get('status')}")
         except BinanceHTTPError as e:
-            bad("DELETE /order", _explain_http(e, endpoint="DELETE /dapi/v1/order", symbol=sy))
+            bad("DELETE /order", _explain_http(e, endpoint="DELETE /fapi/v1/order", symbol=sy))
 
     summarize()
     return rows

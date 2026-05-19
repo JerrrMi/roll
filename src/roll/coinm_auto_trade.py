@@ -431,7 +431,7 @@ def run_live_strategy_iteration(
             sig = evaluate_symbol_offline_public(
                 sym,
                 rest_base=signed_client.config.rest_base.rstrip("/"),
-                coin_m_prefix=signed_client.config.coin_m_prefix,
+                api_prefix=signed_client.config.api_prefix,
                 model=tpl,
                 klines_limit=pcfg.klines_limit,
                 intervals=rb,
