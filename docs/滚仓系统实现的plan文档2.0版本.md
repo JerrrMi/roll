@@ -284,7 +284,7 @@ python -m main run-loop --config config/settings.live.yaml --secrets-file config
 | Testnet | `deploy/systemd/roll-testnet.service` | `/etc/systemd/system/roll-testnet.service` |
 | live | `deploy/systemd/roll-live.service` | `/etc/systemd/system/roll-live.service` |
 
-运维说明见 `deploy/systemd/README.md` 与根目录 `README.md`「Ubuntu 云服务器：systemd 托管」。
+运维说明见 **`§8 云服务器应急与运维手册`**、`deploy/systemd/README.md` 与根目录 `README.md`「Ubuntu 云服务器：systemd 托管」。
 
 Testnet 服务职责：
 
@@ -332,11 +332,82 @@ sudo systemctl daemon-reload
 
 `ExecStart` 同时指定 `--secrets-file` 与 `EnvironmentFile`，两种方式只读取**当前环境**的密钥，且必须与 `--config` 一致。
 
-## 8. 云服务器运行与停止方法
+## 8. 云服务器应急与运维手册（仅 SSH）
 
-### 8.1 Testnet 运行
+> 本节面向**只能通过 SSH 登录 Ubuntu 云服务器**的运维场景。下文默认项目目录为 `/opt/roll`、运行用户为 `ubuntu`、Conda 环境名为 `roll-env`；若你安装时使用了其它路径，请替换命令中的目录与用户名。
+>
+> **重要：停止策略进程 ≠ 自动平仓。** 进程退出后，交易所上的持仓与未成交委托仍以 Binance 为准；必须用对账命令与交易所页面双重确认。
+>
+> systemd 安装细节另见 `deploy/systemd/README.md` 与根目录 `README.md`「Ubuntu 云服务器：systemd 托管」。
 
-前台运行：
+### 8.0 通用约定
+
+| 约定 | 说明 |
+| --- | --- |
+| SSH 登录 | `ssh ubuntu@你的服务器IP` |
+| 项目目录 | `cd /opt/roll` |
+| Conda | **每一条**需要执行 `python -m main …` 的命令前，必须先执行 `conda activate roll-env` |
+| systemd | `systemctl` / `journalctl` 使用 `sudo`，**不需要** conda（服务内已使用 `roll-env` 的 Python） |
+| 环境隔离 | Testnet 用 `settings.testnet.yaml` + `testnet.env` + `roll_state_testnet.json`；live 用 `settings.live.yaml` + `live.env` + `roll_state_live.json`，禁止混用 |
+
+**对账命令（只读交易所、不下单）是停止后确认持仓/挂单的首选方式：**
+
+```bash
+conda activate roll-env
+cd /opt/roll
+# Testnet：
+python -m main reconcile-state --config config/settings.testnet.yaml --secrets-file config/secrets/testnet.env
+# live：
+python -m main reconcile-state --config config/settings.live.yaml --secrets-file config/secrets/live.env
+```
+
+对账输出中应关注（详见 §8.3）：
+
+- `nonzero_position_symbols=[]` → 无持仓
+- `symbols_with_open_orders=[]` → 无未完成委托
+- `reconcile=... halt_automatic_trading=False` → 未因异常快照挂起自动交易
+- `halt_reason=None` 或 `halt_reason=''` → 无 halt 原因（若有内容须按原因人工处理后再启动）
+
+---
+
+### 8.1 通过 SSH 启动与停止 Testnet
+
+#### 8.1.1 方式 A：systemd（推荐常驻）
+
+**启动前（必做，首次或停机后）：**
+
+```bash
+ssh ubuntu@你的服务器IP
+cd /opt/roll
+conda activate roll-env
+python -m main reconcile-state --config config/settings.testnet.yaml --secrets-file config/secrets/testnet.env
+```
+
+确认对账输出无非预期持仓/挂单，且 `halt_automatic_trading=False` 后：
+
+```bash
+sudo systemctl start roll-testnet
+sudo systemctl status roll-testnet
+```
+
+**停止：**
+
+```bash
+sudo systemctl stop roll-testnet
+sudo systemctl status roll-testnet
+```
+
+`status` 中应显示 `inactive (dead)`。停止后按 §8.3 执行 Testnet 对账。
+
+**可选开机自启（验收稳定后）：**
+
+```bash
+sudo systemctl enable roll-testnet
+```
+
+#### 8.1.2 方式 B：SSH 前台调试
+
+适合单轮验收或临时观察（**不要**与 `roll-testnet.service` 同时跑同一套 Testnet signed 配置）：
 
 ```bash
 ssh ubuntu@你的服务器IP
@@ -346,58 +417,23 @@ python -m main reconcile-state --config config/settings.testnet.yaml --secrets-f
 python -m main run-loop --config config/settings.testnet.yaml --secrets-file config/secrets/testnet.env --no-dry-run
 ```
 
-`systemd` 运行：
+单轮：在 `run-loop` 后加 `--once`。
 
-```bash
-ssh ubuntu@你的服务器IP
-sudo systemctl start roll-testnet
-sudo systemctl status roll-testnet
-journalctl -u roll-testnet -f
-```
+**停止前台进程：** 在运行 `run-loop` 的终端按 `Ctrl+C`，然后执行 §8.3 的 Testnet 对账。
 
-### 8.2 Testnet 停止
+---
 
-前台运行时：
+### 8.2 通过 SSH 启动与停止 live（实盘）
 
-```bash
-Ctrl+C
-```
+#### 8.2.1 启动前检查（人工逐项确认）
 
-`systemd` 运行时：
+1. Binance **live** API Key：**禁止提现**；已配置云服务器公网 IP **白名单**（若启用）。
+2. `config/settings.live.yaml`：`environment: live`，`binance.rest_base: "https://dapi.binance.com"`，`strategy.live_trading_enabled: true`。
+3. 密钥与状态：`config/secrets/live.env`（权限 `600`）、`data/roll_state_live.json` 与 Testnet **完全分离**。
+4. **没有**正在运行的第二个 live 进程（§8.6）。
+5. 对账通过、无非预期持仓与挂单（§8.3）。
 
-```bash
-sudo systemctl stop roll-testnet
-sudo systemctl status roll-testnet
-```
-
-停止后确认：
-
-```bash
-cd /opt/roll
-conda activate roll-env
-python -m main reconcile-state --config config/settings.testnet.yaml --secrets-file config/secrets/testnet.env
-```
-
-重点查看：
-
-- `nonzero_position_symbols=[]`
-- `symbols_with_open_orders=[]`
-- `halt=False`
-
-### 8.3 live 运行
-
-live 运行前必须完成：
-
-1. 确认 Binance live API Key 无提现权限。
-2. 确认 live Key 已绑定云服务器 IP 白名单。
-3. 确认 `config/settings.live.yaml` 中 `environment: live`。
-4. 确认 `binance.rest_base: "https://dapi.binance.com"`。
-5. 确认 `strategy.live_trading_enabled: true`。
-6. 确认使用 `config/secrets/live.env`。
-7. 确认 live 状态文件独立于 Testnet。
-8. 先运行 live 对账，确认没有非预期持仓和挂单。
-
-前台单轮：
+**首次或小资金验收建议先前台单轮，再交给 systemd：**
 
 ```bash
 ssh ubuntu@你的服务器IP
@@ -407,71 +443,231 @@ python -m main reconcile-state --config config/settings.live.yaml --secrets-file
 python -m main run-loop --config config/settings.live.yaml --secrets-file config/secrets/live.env --once --no-dry-run
 ```
 
-`systemd` 持续运行：
+#### 8.2.2 方式 A：systemd 持续运行
+
+对账通过后：
 
 ```bash
 sudo systemctl start roll-live
 sudo systemctl status roll-live
-journalctl -u roll-live -f
 ```
 
-### 8.4 live 停止
-
-停止策略进程不等于自动平仓。停止后是否保留持仓，取决于当时交易所真实状态。
-
-`systemd` 停止：
+**停止：**
 
 ```bash
 sudo systemctl stop roll-live
 sudo systemctl status roll-live
 ```
 
-停止后立即对账：
+停止后**立即**按 §8.3 执行 live 对账；若仍有持仓或挂单，按 §8.4 在 Binance 网页手动处理。
+
+**live 默认不要开机自启。** 仅在你明确接受「服务器重启后自动恢复实盘进程」时：
 
 ```bash
-cd /opt/roll
+sudo systemctl enable roll-live
+```
+
+#### 8.2.3 方式 B：SSH 前台持续运行
+
+```bash
 conda activate roll-env
+cd /opt/roll
+python -m main reconcile-state --config config/settings.live.yaml --secrets-file config/secrets/live.env
+python -m main run-loop --config config/settings.live.yaml --secrets-file config/secrets/live.env --no-dry-run
+```
+
+**停止：** `Ctrl+C`，然后 §8.3 live 对账。
+
+---
+
+### 8.3 停止服务后如何确认无持仓、无挂单
+
+**原则：** 最终以 **Binance 交易所页面** 与 **`reconcile-state` 输出** 一致为准；本地 JSON 状态文件不能代替交易所真相。
+
+#### 8.3.1 命令行对账（推荐）
+
+**Testnet 停止后：**
+
+```bash
+conda activate roll-env
+cd /opt/roll
+python -m main reconcile-state --config config/settings.testnet.yaml --secrets-file config/secrets/testnet.env
+```
+
+**live 停止后：**
+
+```bash
+conda activate roll-env
+cd /opt/roll
 python -m main reconcile-state --config config/settings.live.yaml --secrets-file config/secrets/live.env
 ```
 
-如果仍有持仓或挂单：
+**「空仓且无挂单」的判据：**
 
-1. 登录 Binance 实盘账户。
-2. 进入 COIN-M Futures。
-3. 撤销该标的全部未成交委托。
-4. 使用市价或交易所提供的 Close Position 功能平仓。
-5. 回到服务器再次运行 live 对账。
-6. 确认 `nonzero_position_symbols=[]` 和 `symbols_with_open_orders=[]`。
+| 输出字段 | 安全值 | 含义 |
+| --- | --- | --- |
+| `nonzero_position_symbols` | `[]` | 交易所 COIN-M 无净持仓 |
+| `symbols_with_open_orders` | `[]` | 无未成交委托 |
+| `halt_automatic_trading`（在 `reconcile=` 行） | `False` | 未因多标的持仓、跨标的挂单等触发 halt |
+| `halt_reason` | `None` 或空 | 无待处理 halt 原因 |
 
-### 8.5 日志查看
+若 `nonzero_position_symbols` 或 `symbols_with_open_orders` **非空**，或 `halt_automatic_trading=True`：**不要**再 `systemctl start` 对应 signed 服务；先 §8.4（live）或在 Testnet 网页处理，再重新对账直到上表全部为安全值。
 
-Testnet：
+对账会写回对应环境的 `state.path`（如 `data/roll_state_live.json`），并打印 `saved_state_json=...`。
+
+#### 8.3.2 交易所网页复核（强烈建议）
+
+- **Testnet：** 登录 [Binance Futures Testnet](https://testnet.binancefuture.com) → **COIN-M**（币本位合约）→ **仓位** 为 0 → **当前委托** 无挂单。
+- **live：** 登录 [Binance](https://www.binance.com) → **衍生品** → **币本位合约（COIN-M）** → 同上确认。
+
+网页与对账不一致时，**以网页为准**处理风险，处理完再对账。
+
+---
+
+### 8.4 live 仍有持仓或挂单：Binance COIN-M Futures 手动撤单与平仓
+
+本仓库**不提供**一键应急平仓 CLI；live 真实资金场景必须在 **Binance 官网 / App** 操作。
+
+#### 8.4.1 操作顺序（不要颠倒）
+
+1. **先停止 live 策略进程**（避免与人工单冲突）  
+   `sudo systemctl stop roll-live`，或前台 `Ctrl+C`。  
+   用 §8.6 确认无第二个 live `run-loop`。
+2. **登录 Binance 实盘账户**（非 Testnet）。
+3. 进入 **衍生品 → 币本位合约（COIN-M Futures）**（英文界面多为 **Derivatives → COIN-M Futures**）。
+4. **撤销挂单（必须先做）**  
+   - 打开 **当前委托 / Open Orders**（或 **条件委托** 若使用 STOP 等）。  
+   - 筛选仍有持仓的 **合约 symbol**（如 `DOGEUSD_PERP`）。  
+   - 对该 symbol **撤销全部**未成交单（含 STOP_MARKET、限价、只减仓单等）；可使用「全部撤单」若界面提供且你确认范围正确。  
+   - **目的：** 避免手动平仓后仍有止损/条件单触发开反向仓。
+5. **平仓**  
+   - 打开 **仓位 / Positions**。  
+   - 找到目标合约，使用 **市价平仓 / Market Close** 或 **平仓 / Close Position**（以界面文案为准）。  
+   - 双向持仓模式下请对 **实际有数量的方向** 平仓，避免留下对冲腿。
+6. **复查**  
+   - 仓位页该 symbol **数量为 0**；当前委托 **为空**。
+7. **回到 SSH 再次 live 对账**（§8.3.1），确认：  
+   `nonzero_position_symbols=[]`、`symbols_with_open_orders=[]`、`halt_automatic_trading=False`。
+
+#### 8.4.2 注意
+
+- COIN-M 为**币本位**合约，与 U 本位（USD-M）账户分离；务必在 **COIN-M** 板块操作。
+- 市价平仓有滑点；极端行情下成交价可能差于标记价。
+- 若对账仍报多标的持仓或 `halt_reason` 含跨品种挂单，须在网页逐项清理后重复对账，**不要**在未清理前启动 `roll-live`。
+
+Testnet 应急步骤相同，但登录 **Testnet 站点** 与 Testnet 对账命令（`settings.testnet.yaml`）。
+
+---
+
+### 8.5 日志、重启服务、禁用开机自启
+
+以下 `journalctl` / `systemctl` 命令在 SSH 中执行即可，**无需** `conda activate`。
+
+#### 8.5.1 查看最近 200 行日志
 
 ```bash
-journalctl -u roll-testnet -n 200
-journalctl -u roll-testnet -f
+journalctl -u roll-testnet -n 200 --no-pager
+journalctl -u roll-live -n 200 --no-pager
 ```
 
-live：
+#### 8.5.2 持续跟踪日志（排障时常用）
 
 ```bash
-journalctl -u roll-live -n 200
+journalctl -u roll-testnet -f
+# 或
 journalctl -u roll-live -f
 ```
 
-重启：
+按 `Ctrl+C` 退出跟踪（不会停止服务）。
+
+本次启动以来的日志：`journalctl -u roll-live -b`（Testnet 将单元名改为 `roll-testnet`）。
+
+#### 8.5.3 重启服务
+
+重启前建议先对账，确认无异常 halt：
+
+```bash
+conda activate roll-env
+cd /opt/roll
+python -m main reconcile-state --config config/settings.live.yaml --secrets-file config/secrets/live.env
+```
 
 ```bash
 sudo systemctl restart roll-testnet
 sudo systemctl restart roll-live
+sudo systemctl status roll-testnet   # 或 roll-live
 ```
 
-禁用开机自启：
+#### 8.5.4 禁用开机自启
+
+防止服务器重启后自动拉起策略（**live 默认应 disable**）：
 
 ```bash
 sudo systemctl disable roll-testnet
 sudo systemctl disable roll-live
 ```
+
+查看是否已启用自启：`systemctl is-enabled roll-live`（输出 `disabled` 为未开机自启）。
+
+---
+
+### 8.6 禁止同时运行多个 live 自动交易进程
+
+**同一 live 账户在同一时刻只能有一个 signed 自动交易进程**（一个 `roll-live.service` **或** 一个前台 `run-loop --no-dry-run`，不能两者并存，也不能两个 service、两个前台）。
+
+程序在 `data/roll_state_live.json` 旁使用互斥锁 `data/roll_state_live.json.lock`；第二个 live 进程启动时会报错并退出，但**不应依赖报错来纠错**——重复进程可能导致抢单、重复下单风险。
+
+**禁止的组合示例：**
+
+- `sudo systemctl start roll-live` **且** SSH 前台 `python -m main run-loop ... settings.live.yaml ... --no-dry-run`
+- 两个 SSH 会话各跑一个 live `run-loop --no-dry-run`
+- 旧进程未停干净又 `systemctl start`
+
+**启动 live 前检查：**
+
+```bash
+sudo systemctl status roll-live
+pgrep -af "run-loop.*settings.live.yaml" || true
+ls -l /opt/roll/data/roll_state_live.json.lock 2>/dev/null || echo "无锁文件（通常表示无 live 进程持有锁）"
+```
+
+应只有**一路** live：要么 `systemctl` 显示 `active (running)` 且无多余 `run-loop`，要么全部为 stopped/无进程。
+
+**正确切换方式：** 先 `sudo systemctl stop roll-live`（或停掉前台 `Ctrl+C`）→ 确认 §8.3 → 再启动另一种方式。
+
+Testnet 同理：不要同时运行 `roll-testnet.service` 与前台 Testnet `run-loop --no-dry-run`。
+
+---
+
+### 8.7 仅 SSH 场景速查：运行、停止、排障、应急平仓
+
+| 目标 | 做法 |
+| --- | --- |
+| **运行 Testnet** | 对账 → `sudo systemctl start roll-testnet`（或前台 `run-loop`，二选一） |
+| **停止 Testnet** | `sudo systemctl stop roll-testnet` 或前台 `Ctrl+C` → Testnet 对账 → 网页复核 |
+| **运行 live** | 完成 §8.2.1 检查 → 对账 → 建议 `--once` 验收 → `sudo systemctl start roll-live` |
+| **停止 live** | `sudo systemctl stop roll-live` 或 `Ctrl+C` → live 对账 |
+| **确认空仓** | `reconcile-state` 见 §8.3 + Binance COIN-M 网页 |
+| **应急平仓（live）** | 停进程 → 网页 COIN-M **先撤单再市价平仓** → SSH 再对账 |
+| **看日志** | `journalctl -u roll-live -n 200 --no-pager` / `-f` |
+| **重启** | 对账 → `sudo systemctl restart roll-live` |
+| **禁止重启自启 live** | `sudo systemctl disable roll-live` |
+| **排障** | `status` + `journalctl -f` + 对账输出中的 `halt_reason`；禁止在未平仓时强行 `start` |
+
+---
+
+### 8.8 常见排障（仍只需 SSH）
+
+| 现象 | 可能原因 | 处理 |
+| --- | --- | --- |
+| `systemctl start roll-live` 失败 | 对账未做、配置/密钥错误、已有 live 进程 | `status` + `journalctl -u roll-live -n 50`；§8.6 清重复进程；修正配置后对账再启 |
+| 启动报「已有其它 live 进程」 | 重复 live | `stop roll-live`；`pgrep -af run-loop`；结束残留进程后再启 |
+| 对账 `halt_automatic_trading=True` | 多标的持仓、跨标的挂单、异常快照 | 读 `halt_reason`；网页清理；再对账 |
+| 停止后仍有持仓 | **正常**：停止不平仓 | §8.4 网页撤单平仓 |
+| 日志无新输出 | 服务未运行或卡住 | `systemctl status`；`journalctl -f`；必要时 `restart` 前先对账 |
+| API / 鉴权错误 | IP 白名单、密钥文件、环境混用 | 确认 `live.env` 与 `settings.live.yaml` 配对；Binance 后台检查 Key 与 IP |
+
+所有需要调用 `python -m main` 的排障步骤，仍须先 `conda activate roll-env`。
 
 ## 9. 实盘上线检查清单
 
@@ -487,7 +683,7 @@ live 首次启动前逐项确认：
 - [ ] live 状态文件与 Testnet 状态文件分离。
 - [ ] live 初始资金很小，能够接受全部损失。
 - [ ] 已记录手动撤单和平仓步骤。
-- [ ] 已确认系统不会同时运行两个 live 进程。
+- [ ] 已确认系统不会同时运行两个 live 进程（见 §8.6）。
 - [ ] 已确认 `systemd` 中只有一个 `roll-live` 服务实例。
 - [ ] 已确认服务器时间同步正常。
 - [ ] 已确认日志不会打印 Secret。
