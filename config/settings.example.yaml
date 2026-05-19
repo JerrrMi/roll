@@ -3,6 +3,10 @@
 
 environment: testnet
 
+# API 密钥文件（复制 config/secrets/*.env.example → config/secrets/*.env，勿提交 .env）
+secrets:
+  file: "./config/secrets/testnet.env"
+
 binance:
   # 官方 Testnet（COIN-M 与 USD-M 共用该 host；路径区分 /dapi vs /fapi）
   rest_base: "https://testnet.binancefuture.com"
@@ -30,7 +34,7 @@ timeframes:
   - "4h"
 
 # 策略主循环（python -m main run-loop）：默认 dry-run（不下单）。
-# Testnet 自动下单须同时：CLI `--no-dry-run` + 下方 testnet_signed_orders_enabled: true + 环境变量 BINANCE_*。
+# Testnet 自动下单须同时：CLI `--no-dry-run` + 下方 testnet_signed_orders_enabled: true + 密钥文件或 BINANCE_*。
 strategy:
   # 安全开关：默认 false；仅在为 Testnet 验收真实挂单时改为 true
   testnet_signed_orders_enabled: false

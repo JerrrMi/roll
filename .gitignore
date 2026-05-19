@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local secrets (never commit real keys; *.example templates are tracked)
+config/secrets/*.env
+!config/secrets/*.example
+
+# Runtime state / logs (optional local artifacts)
+data/*.json
+logs/

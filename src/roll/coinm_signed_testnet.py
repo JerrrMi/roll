@@ -142,7 +142,7 @@ def run_signed_testnet_acceptance(
     if not ck or not cs:
         bad(
             "guard_api_credentials",
-            "缺少 BINANCE_API_KEY 或 BINANCE_API_SECRET（已设置则从环境读取；禁止打印 Secret）。",
+            "缺少 BINANCE_API_KEY 或 BINANCE_API_SECRET（--secrets-file / secrets.file / 环境变量；禁止打印 Secret）。",
         )
         summarize()
         return rows

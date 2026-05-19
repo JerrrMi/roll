@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -78,15 +77,16 @@ def _cmd_coinm_signed_smoke(project_root: Path, argv: list[str]) -> int:
         prog="python -m main coinm-signed-smoke",
         description=(
             "Binance COIN-M Futures **Testnet ONLY** Signed API 验收；"
-            "API Key / Secret 从环境变量 BINANCE_API_KEY / BINANCE_API_SECRET 读取（禁止打印 Secret）。"
+            "API Key / Secret 从 --secrets-file、配置 secrets.file 或环境变量读取（禁止打印 Secret）。"
         ),
     )
     ap.add_argument(
         "--config",
         type=Path,
         default=project_root / "config/settings.yaml",
-        help="读取 binance.rest_base / recv_window_ms / coin_m_prefix",
+        help="读取 binance.rest_base / recv_window_ms / coin_m_prefix / secrets.file",
     )
+    _add_secrets_file_argument(ap)
     ap.add_argument(
         "--symbol",
         required=True,
@@ -112,8 +112,18 @@ def _cmd_coinm_signed_smoke(project_root: Path, argv: list[str]) -> int:
     coin_m_prefix = str(b.get("coin_m_prefix", "/dapi/v1"))
     recv_window_ms = int(b.get("recv_window_ms", 5000))
 
-    api_key = os.environ.get("BINANCE_API_KEY")
-    api_secret = os.environ.get("BINANCE_API_SECRET")
+    from roll.secrets import SecretsError, load_binance_credentials
+
+    try:
+        creds = load_binance_credentials(
+            secrets_file_cli=args_sm.secrets_file,
+            settings=settings,
+            project_root=project_root,
+        )
+        api_key, api_secret = creds.api_key, creds.api_secret
+    except SecretsError as exc:
+        print(f"[coinm-signed-smoke] {exc}", file=sys.stderr)
+        return 2
 
     outcome = run_signed_testnet_acceptance(
         rest_base=rest_base,
@@ -132,6 +142,18 @@ def _cmd_coinm_signed_smoke(project_root: Path, argv: list[str]) -> int:
 
 def _resolve_cfg_path(cfg: Path, project_root: Path) -> Path:
     return cfg if cfg.is_absolute() else project_root / cfg
+
+
+def _add_secrets_file_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--secrets-file",
+        type=Path,
+        default=None,
+        help=(
+            "Binance API 密钥文件（BINANCE_API_KEY / BINANCE_API_SECRET）；"
+            "优先于配置 secrets.file 与进程环境变量"
+        ),
+    )
 
 
 def _load_settings_yaml(cfg_path: Path) -> dict:
@@ -344,15 +366,16 @@ def _cmd_run_loop(project_root: Path, argv: list[str]) -> int:
         prog="python -m main run-loop",
         description=(
             "多候选扫描 → 趋势评分 → 风控择优 → 默认 dry-run；"
-            "加 --no-dry-run（仅官方 Futures Testnet + BINANCE_*）则 Signed 闭环自动交易。"
+            "加 --no-dry-run（仅官方 Futures Testnet）则 Signed 闭环自动交易（需密钥文件或 BINANCE_*）。"
         ),
     )
     ap.add_argument(
         "--config",
         type=Path,
         default=project_root / "config/settings.yaml",
-        help="读取 binance / candidates / strategy / logging",
+        help="读取 binance / candidates / strategy / logging / secrets.file",
     )
+    _add_secrets_file_argument(ap)
     ap.add_argument(
         "--once",
         action="store_true",
@@ -369,7 +392,7 @@ def _cmd_run_loop(project_root: Path, argv: list[str]) -> int:
         action="store_true",
         help=(
             "COIN-M Futures **Testnet** 自动下单（binance.rest_base 须为官方 Testnet）；"
-            "需 BINANCE_API_KEY / BINANCE_API_SECRET，且 settings.strategy.testnet_signed_orders_enabled=true。"
+            "需 --secrets-file / secrets.file / BINANCE_*，且 settings.strategy.testnet_signed_orders_enabled=true。"
         ),
     )
     ap.add_argument(
@@ -408,12 +431,9 @@ def _cmd_run_loop(project_root: Path, argv: list[str]) -> int:
         rest_public = str(params.public_rest_base).strip()
         log.info("strategy.public_rest_base overrides market REST (read/K 线/ticker): %s", rest_public)
 
-    api_key_env = os.environ.get("BINANCE_API_KEY")
-    api_secret_env = os.environ.get("BINANCE_API_SECRET")
-    api_key_ck = api_key_env.strip() if isinstance(api_key_env, str) else ""
-    api_secret_cs = api_secret_env.strip() if isinstance(api_secret_env, str) else ""
-
     dry_run = not args_loop.no_dry_run
+    api_key_ck = ""
+    api_secret_cs = ""
     signed_client_live = None
     pm_for_live = None
     store_live = None
@@ -437,8 +457,18 @@ def _cmd_run_loop(project_root: Path, argv: list[str]) -> int:
                 file=sys.stderr,
             )
             return 2
-        if not api_key_ck or not api_secret_cs:
-            print("[run-loop] --no-dry-run 需要环境变量 BINANCE_API_KEY / BINANCE_API_SECRET。", file=sys.stderr)
+        from roll.secrets import SecretsError, load_binance_credentials
+
+        try:
+            creds = load_binance_credentials(
+                secrets_file_cli=args_loop.secrets_file,
+                settings=settings,
+                project_root=project_root,
+            )
+            api_key_ck = creds.api_key
+            api_secret_cs = creds.api_secret
+        except SecretsError as exc:
+            print(f"[run-loop] {exc}", file=sys.stderr)
             return 2
         if params.public_rest_base:
             pu = rest_public.rstrip("/").lower()
@@ -556,8 +586,9 @@ def _cmd_reconcile_state(project_root: Path, argv: list[str]) -> int:
         "--config",
         type=Path,
         default=project_root / "config/settings.yaml",
-        help="读取 binance/rest_base/state 等字段",
+        help="读取 binance/rest_base/state/secrets.file 等字段",
     )
+    _add_secrets_file_argument(ap)
     ap.add_argument(
         "--no-save",
         action="store_true",
@@ -584,23 +615,24 @@ def _cmd_reconcile_state(project_root: Path, argv: list[str]) -> int:
         )
         return 2
 
-    api_key = os.environ.get("BINANCE_API_KEY")
-    api_secret = os.environ.get("BINANCE_API_SECRET")
-    ck = api_key.strip() if isinstance(api_key, str) else None
-    cs = api_secret.strip() if isinstance(api_secret, str) else None
-    if not ck or not cs:
-        print(
-            "[reconcile-state] 需要环境变量 BINANCE_API_KEY / BINANCE_API_SECRET（禁止打印 Secret）。",
-            file=sys.stderr,
+    from roll.secrets import SecretsError, load_binance_credentials
+
+    try:
+        creds = load_binance_credentials(
+            secrets_file_cli=args_r.secrets_file,
+            settings=settings,
+            project_root=project_root,
         )
+    except SecretsError as exc:
+        print(f"[reconcile-state] {exc}", file=sys.stderr)
         return 2
 
     cfg = BinanceClientConfig(
         rest_base=rest_base,
         coin_m_prefix=coin_m_prefix,
         recv_window_ms=recv_window_ms,
-        api_key=ck,
-        api_secret=cs,
+        api_key=creds.api_key,
+        api_secret=creds.api_secret,
     )
     client = BinanceCoinMSignedClient(cfg)
 
@@ -688,8 +720,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     log.info(
         "Testnet signed 主循环（须 strategy.testnet_signed_orders_enabled=true）："
-        "`python -m main reconcile-state` 对账后 "
-        "`python -m main run-loop --no-dry-run`（仅官方 Testnet REST）。",
+        "`python -m main reconcile-state --secrets-file config/secrets/testnet.env` 对账后 "
+        "`python -m main run-loop --no-dry-run --secrets-file config/secrets/testnet.env`（仅官方 Testnet REST）。",
     )
     log.info(
         "策略 dry-run 主循环：`python -m main run-loop --once`（默认公有 REST，不下单）。"
@@ -697,8 +729,9 @@ def main(argv: list[str] | None = None) -> int:
     log.info("历史回测与参数校准：`conda activate roll-env` 后 `python -m main backtest --days 180`")
     log.info("运行 `python -m main trend-offline --symbol YOUR_PERP_SYMBOL` 可离线验收趋势模型。")
     log.info(
-        "Testnet Signed 验收：设置 BINANCE_* 环境变量后执行 "
-        "`python -m main coinm-signed-smoke --symbol YOUR_PERP`。",
+        "Testnet Signed 验收："
+        "`python -m main coinm-signed-smoke --secrets-file config/secrets/testnet.env --symbol YOUR_PERP`"
+        "（或配置 secrets.file / 环境变量 BINANCE_*）。",
     )
     return 0
 

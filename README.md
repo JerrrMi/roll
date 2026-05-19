@@ -26,34 +26,36 @@ copy config\settings.example.yaml config\settings.yaml
 
 编辑 `config/settings.yaml`：`candidates`、`binance.rest_base`、`strategy` 等。勿将 API Secret 写入 YAML 或提交 Git。
 
-## Binance Testnet API Key（环境变量）
+## Binance API 密钥（本地文件，推荐）
 
-在 Binance **Futures Testnet** 创建 COIN-M 可用的 Key（**不要**开启提现）。在当前终端会话设置：
-
-**PowerShell：**
-
-```powershell
-conda activate roll-env
-$env:BINANCE_API_KEY = "你的_testnet_key"
-$env:BINANCE_API_SECRET = "你的_testnet_secret"
-```
-
-**Bash：**
+在 Binance **Futures Testnet** 创建 COIN-M 可用的 Key（**不要**开启提现）。复制示例并填入占位符（勿提交真实密钥）：
 
 ```bash
 conda activate roll-env
-export BINANCE_API_KEY="你的_testnet_key"
-export BINANCE_API_SECRET="你的_testnet_secret"
+mkdir -p config/secrets
+cp config/secrets/testnet.env.example config/secrets/testnet.env
+# 编辑 testnet.env：BINANCE_API_KEY=...  BINANCE_API_SECRET=...
 ```
 
-详见 `config/env.example`。
+`config/secrets/` 已加入 `.gitignore`；仅 `*.example` 可提交。
+
+读取优先级：**`--secrets-file`** → 配置 **`secrets.file`** → 进程环境变量 `BINANCE_*`（兼容 fallback）。
+
+在 `config/settings.yaml` 中可设置：
+
+```yaml
+secrets:
+  file: "./config/secrets/testnet.env"
+```
+
+详见 `config/env.example` 与 `config/secrets/*.env.example`。
 
 ## 安全开关（默认不下单）
 
 | 行为 | 说明 |
 | --- | --- |
 | **dry-run（默认）** | `python -m main run-loop`：只拉行情、打印决策，**不发 signed 单**。 |
-| **Testnet 真实挂单** | 需 **CLI** `--no-dry-run` **且** `strategy.testnet_signed_orders_enabled: true` **且** `binance.rest_base` 为官方 Testnet **且** 已设置 `BINANCE_*`。 |
+| **Testnet 真实挂单** | 需 **CLI** `--no-dry-run` **且** `strategy.testnet_signed_orders_enabled: true` **且** `binance.rest_base` 为官方 Testnet **且** 密钥文件或 `BINANCE_*`。 |
 | **实盘自动交易** | `strategy.live_trading_enabled` **默认为 false**；当前 **`run-loop --no-dry-run` 仅允许 Testnet**，不接实盘 REST。 |
 
 自动交易若配置了 `strategy.public_rest_base`，则其必须与 `binance.rest_base` 相同；dry-run 可用实盘公共 REST 仅读行情时参见示例 YAML 注释。
@@ -71,8 +73,8 @@ python -m main run-loop --once
 
 ```bash
 conda activate roll-env
-python -m main reconcile-state
-python -m main run-loop --no-dry-run
+python -m main reconcile-state --secrets-file config/secrets/testnet.env
+python -m main run-loop --secrets-file config/secrets/testnet.env --no-dry-run
 ```
 
 （须在 `settings.yaml` 将 `testnet_signed_orders_enabled` 设为 `true`，且 Testnet 自动交易时不要使用与 Testnet 不一致的 `public_rest_base`。）
