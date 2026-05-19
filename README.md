@@ -207,10 +207,27 @@ sudo systemctl disable roll-testnet
 sudo systemctl disable roll-live
 ```
 
+## Live 上线前验收（2.0 Prompt 8）
+
+在启用实盘 signed 自动交易或 `roll-live.service` 之前，按顺序完成 Testnet 闭环、live dry-run（≥24h）、live 对账、极小资金单轮 `--once` 与人工记录：
+
+- **流程与命令**：[`docs/live-go-live-acceptance.md`](docs/live-go-live-acceptance.md)
+- **可打印清单**：[`docs/checklists/live-go-live-checklist.md`](docs/checklists/live-go-live-checklist.md)
+- **自动化脚本**（Linux/WSL）：[`scripts/acceptance/README.md`](scripts/acceptance/README.md)
+- **试运行保守参数参考**：[`config/settings.live.minimal-funds.example.yaml`](config/settings.live.minimal-funds.example.yaml)
+- **记录模板**：[`docs/templates/live-acceptance-record.template.md`](docs/templates/live-acceptance-record.template.md)
+
+```bash
+conda activate roll-env
+cd /opt/roll
+bash scripts/acceptance/preflight.sh
+```
+
 ## 文档
 
 - 1.0 设计与操作：`docs/滚仓系统实现的plan文档.md` §11–§12。
 - 2.0 实盘与部署计划：`docs/滚仓系统实现的plan文档2.0版本.md`。
+- **Live 最终验收**：`docs/live-go-live-acceptance.md`。
 - systemd 安装细节：`deploy/systemd/README.md`。
 
 ## 测试

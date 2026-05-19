@@ -857,6 +857,8 @@ live 首次启动前逐项确认：
 
 ### Prompt 8：live 前最终验收与小资金试运行
 
+> **已实现（仓库内）**：[`docs/live-go-live-acceptance.md`](live-go-live-acceptance.md)、[`docs/checklists/live-go-live-checklist.md`](checklists/live-go-live-checklist.md)、[`scripts/acceptance/`](../scripts/acceptance/)、记录模板 [`docs/templates/live-acceptance-record.template.md`](templates/live-acceptance-record.template.md)。
+
 ```text
 请制定并实现 live 前最终验收流程所需的命令、检查清单和文档，但不要修改策略模型。
 要求：

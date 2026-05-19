@@ -1,0 +1,26 @@
+# Live 首次 signed 试运行 — 保守参数参考（合并进 config/settings.live.yaml）
+#
+# 说明：
+# - 仅调整 strategy 下的仓位/杠杆相关数值，不修改趋势模型代码。
+# - 复制需要的键到 settings.live.yaml；勿直接 rename 为本文件替代 live.yaml。
+# - 账户保证金应仅为可承受全部损失的小额资金。
+
+# 建议在 settings.live.yaml 的 strategy: 块中采用或接近以下值：
+
+strategy:
+  live_trading_enabled: true   # 仅阶段 4 起启用；阶段 2 dry-run 期间保持 false
+  testnet_signed_orders_enabled: false
+  loop_interval_sec: 120
+  min_monitor_symbols: 3
+  # 降低 sizing 相关输入（RiskEngine 使用 dry_run_equity 作权益参考）
+  dry_run_equity: 500
+  initial_leverage: 5
+  stop_adverse_fraction: 0.05
+  kelly_p: 0.55
+  kelly_b: 1.2
+  # 若已在主配置中启用追踪止损，实盘初期可保持与 Testnet 一致或略宽，勿在未验收时频繁改动
+
+# 可选：减少候选池，仅保留流动性好、规则熟悉的合约（在 settings.live.yaml 的 candidates: 中删减）
+# candidates:
+#   - DOGE
+#   - BTC
