@@ -1,0 +1,52 @@
+# Binance COIN-M Futures — Testnet 自动交易示例配置
+# 复制为本地配置（勿提交 Git）：
+#   cp config/settings.testnet.example.yaml config/settings.testnet.yaml
+# 配合密钥：cp config/secrets/testnet.env.example config/secrets/testnet.env
+
+environment: testnet
+
+secrets:
+  file: "./config/secrets/testnet.env"
+
+binance:
+  rest_base: "https://testnet.binancefuture.com"
+  coin_m_prefix: "/dapi/v1"
+  recv_window_ms: 5000
+
+candidates:
+  - DOGE
+  - AVAX
+  - BTC
+  - SHIB
+  - WIF
+  - PEPE
+  - TON
+  - HYPE
+
+timeframes:
+  - "15m"
+  - "1h"
+  - "4h"
+
+strategy:
+  # Testnet signed 自动下单：须 CLI --no-dry-run 且本项为 true，且 rest_base 为 Testnet host
+  testnet_signed_orders_enabled: false
+  live_trading_enabled: false
+  loop_interval_sec: 120
+  klines_limit: 600
+  min_monitor_symbols: 3
+  dry_run_equity: 10000
+  initial_leverage: 25
+  stop_adverse_fraction: 0.05
+  kelly_p: 0.55
+  kelly_b: 1.2
+  # dry-run 时若 Testnet 候选不足，可仅读行情使用实盘公共 REST（勿与 Testnet signed 混用）：
+  # public_rest_base: "https://dapi.binance.com"
+
+logging:
+  level: INFO
+  structured: true
+
+state:
+  backend: json
+  path: "./data/roll_state_testnet.json"

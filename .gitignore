@@ -6,6 +6,11 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 
+# Local settings (copy from *.example.yaml; never commit real overrides)
+config/settings.yaml
+config/settings.testnet.yaml
+config/settings.live.yaml
+
 # Local secrets (never commit real keys; *.example templates are tracked)
 config/secrets/*.env
 !config/secrets/*.example

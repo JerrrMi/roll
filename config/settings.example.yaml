@@ -1,9 +1,11 @@
-# Binance COIN-M Futures — 示例配置（复制为 settings.yaml 后修改）
-# 默认 Testnet；切换实盘请修改 rest_base 并确认风险。
+# Binance COIN-M Futures — 通用示例（历史兼容）
+# 2.0 推荐按环境拆分，请优先使用：
+#   config/settings.testnet.example.yaml → config/settings.testnet.yaml
+#   config/settings.live.example.yaml   → config/settings.live.yaml
+# 详见 README「配置文件」。
 
 environment: testnet
 
-# API 密钥文件（复制 config/secrets/*.env.example → config/secrets/*.env，勿提交 .env）
 secrets:
   file: "./config/secrets/testnet.env"
 
@@ -62,7 +64,5 @@ logging:
   structured: true
 
 state:
-  # MVP：交易锁与 reconcile 结果以 JSON 落盘。
-  # 若仍为 sqlite（尚未实现），reconcile-state 将把路径改写为同名 .json 旁写。
-  backend: sqlite
-  path: "./data/roll_state.sqlite"
+  backend: json
+  path: "./data/roll_state_testnet.json"
