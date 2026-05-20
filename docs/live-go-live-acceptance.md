@@ -152,6 +152,12 @@ bash scripts/acceptance/phase2-live-dry-run-start.sh
 
 在**单独 SSH 会话**保持运行；或用 `tmux`/`screen` 防止断开。
 
+```bash
+tmux ls
+tmux new -s my-session
+tmux attach-session -t phase2-live-dry-run-start-session
+```
+
 ### 满 24 小时后检查
 
 停止 dry-run（运行终端 `Ctrl+C`），然后：

@@ -222,7 +222,7 @@ def test_signed_client_repr_and_config_hide_secret() -> None:
     assert repr(cfg) == "" or secret not in repr(cfg)
 
 
-def test_signed_request_url_uses_fapi_prefix() -> None:
+def test_signed_account_uses_fapi_v2_user_data_prefix() -> None:
     secret = "signing_key"
     cfg = BinanceClientConfig(
         rest_base="https://testnet.binancefuture.com",
@@ -235,7 +235,24 @@ def test_signed_request_url_uses_fapi_prefix() -> None:
         with patch.object(BinanceUsdmClient, "_http_json_request", return_value={"ok": True}) as mock_http:
             client.account()
     called_url = mock_http.call_args[0][1]
-    assert called_url.startswith("https://testnet.binancefuture.com/fapi/v1/account?")
+    assert called_url.startswith("https://testnet.binancefuture.com/fapi/v2/account?")
     assert "signature=" in called_url
     assert secret not in called_url
     assert "timestamp=1700000000000" in called_url
+
+
+def test_signed_position_risk_uses_fapi_v2_user_data_prefix() -> None:
+    secret = "signing_key"
+    cfg = BinanceClientConfig(
+        rest_base="https://testnet.binancefuture.com",
+        api_prefix="/fapi/v1",
+        api_key="k",
+        api_secret=secret,
+    )
+    client = BinanceCoinMSignedClient(cfg)
+    with patch.object(BinanceUsdmClient, "estimated_server_time_ms", return_value=1700000000000):
+        with patch.object(BinanceUsdmClient, "_http_json_request", return_value=[]) as mock_http:
+            client.position_risk(symbol="BTCUSDT")
+    called_url = mock_http.call_args[0][1]
+    assert called_url.startswith("https://testnet.binancefuture.com/fapi/v2/positionRisk?")
+    assert "symbol=BTCUSDT" in called_url

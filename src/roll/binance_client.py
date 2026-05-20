@@ -23,6 +23,8 @@ from urllib.request import Request, urlopen
 DEFAULT_TESTNET_REST_BASE = "https://testnet.binancefuture.com"
 DEFAULT_LIVE_REST_BASE = "https://fapi.binance.com"
 DEFAULT_API_PREFIX = "/fapi/v1"
+# Binance 已下线 v1 的 account / positionRisk（2023-07 起）；须走 v2 USER_DATA。
+FAPI_USER_DATA_PREFIX = "/fapi/v2"
 DEFAULT_PRODUCT = "usdm"
 
 BINANCE_ALLOWED_TESTNET_HOSTS = frozenset({"testnet.binancefuture.com"})
@@ -481,9 +483,15 @@ class BinanceUsdmClient:
         """基于本地时钟与已缓存偏移估算当前服务器毫秒时间。"""
         return _millis_now() + self._server_offset_ms
 
-    def _build_rest_url(self, path: str, query: str | None = None) -> str:
+    def _build_rest_url(
+        self,
+        path: str,
+        query: str | None = None,
+        *,
+        api_prefix: str | None = None,
+    ) -> str:
         base = self._config.rest_base.rstrip("/")
-        prefix = self._config.api_prefix.rstrip("/")
+        prefix = (api_prefix if api_prefix is not None else self._config.api_prefix).rstrip("/")
         full_path = f"{prefix}{path}" if prefix else path
         if not full_path.startswith("/"):
             full_path = "/" + full_path
@@ -701,31 +709,38 @@ class BinanceCoinMSignedClient(BinanceUsdmClient):
         merged["recvWindow"] = int(self._config.recv_window_ms)
         return merged
 
-    def _request_json_signed(self, method: str, path: str, params: Mapping[str, Any] | None = None) -> Any:
+    def _request_json_signed(
+        self,
+        method: str,
+        path: str,
+        params: Mapping[str, Any] | None = None,
+        *,
+        api_prefix: str | None = None,
+    ) -> Any:
         secret = self._config.api_secret
         if secret is None:
             raise BinanceSignerError("api_secret missing")
 
         merged = self._signed_payload(dict(params or {}))
         qs = build_signed_query_string(merged, signing_secret=str(secret))
-        url = self._build_rest_url(path, qs)
+        url = self._build_rest_url(path, qs, api_prefix=api_prefix)
         return self._http_json_request(method, url, send_api_key_if_configured=True)
 
     def account(self) -> dict[str, Any]:
-        """GET /fapi/v1/account（路径由 api_prefix 决定，默认 /fapi/v1）。"""
-        data = self._request_json_signed("GET", "/account")
+        """GET /fapi/v2/account（v1 已下线；下单等仍用 config.api_prefix，默认 /fapi/v1）。"""
+        data = self._request_json_signed("GET", "/account", api_prefix=FAPI_USER_DATA_PREFIX)
         if not isinstance(data, Mapping):
             raise BinanceHTTPError(f"unexpected account payload: {type(data)}")
         return dict(data)
 
     def position_risk(self, *, symbol: str | None = None, pair: str | None = None) -> list[dict[str, Any]]:
-        """GET /fapi/v1/positionRisk（路径由 api_prefix 决定）。"""
+        """GET /fapi/v2/positionRisk（v1 已下线；下单等仍用 config.api_prefix）。"""
         p: dict[str, Any] = {}
         if symbol is not None:
             p["symbol"] = symbol
         if pair is not None:
             p["pair"] = pair
-        data = self._request_json_signed("GET", "/positionRisk", p)
+        data = self._request_json_signed("GET", "/positionRisk", p, api_prefix=FAPI_USER_DATA_PREFIX)
         if not isinstance(data, list):
             raise BinanceHTTPError(f"unexpected positionRisk payload: {type(data)}")
         rows: list[dict[str, Any]] = []
