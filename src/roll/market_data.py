@@ -26,5 +26,5 @@ class MarketDataService:
         *,
         limit: int = 500,
     ) -> Any:
-        """占位：后续调用 GET /dapi/v1/klines。"""
+        """占位：后续调用 GET /fapi/v1/klines。"""
         raise NotImplementedError("骨架阶段未实现行情拉取")

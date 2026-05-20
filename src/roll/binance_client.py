@@ -3,7 +3,8 @@
 覆盖 GET /fapi/v1：ping、time、exchangeInfo、klines、ticker/price；
 支持服务器时间偏移估算与 exchangeInfo 动态解析；候选资产筛选（精确 baseAsset 匹配）。
 
-Signed API：`BinanceCoinMSignedClient`（类名历史保留），HMAC SHA256 + timestamp + recvWindow；
+Signed API：`BinanceUsdmSignedClient`（3.0 主名；`BinanceCoinMSignedClient` 为历史别名），
+HMAC SHA256 + timestamp + recvWindow；
 不得将 API Secret 写入日志或通过 __repr__ 暴露（见 BinanceClientConfig）。
 """
 
@@ -625,6 +626,30 @@ class BinanceUsdmClient:
             raise BinanceHTTPError(f"unexpected klines payload: {type(data)}")
         return data
 
+    def funding_rate_history(
+        self,
+        symbol: str,
+        *,
+        start_time_ms: int | None = None,
+        end_time_ms: int | None = None,
+        limit: int = 1000,
+    ) -> list[dict[str, Any]]:
+        """GET /fapi/v1/fundingRate — 历史资金费率（按 fundingTime 升序）。"""
+        params: dict[str, Any] = {"symbol": symbol.upper(), "limit": limit}
+        if start_time_ms is not None:
+            params["startTime"] = int(start_time_ms)
+        if end_time_ms is not None:
+            params["endTime"] = int(end_time_ms)
+        data = self._request_json("GET", "/fundingRate", params)
+        if not isinstance(data, list):
+            raise BinanceHTTPError(f"unexpected fundingRate payload: {type(data)}")
+        out: list[dict[str, Any]] = []
+        for row in data:
+            if isinstance(row, Mapping):
+                out.append(dict(row))
+        out.sort(key=lambda r: int(r.get("fundingTime", 0)))
+        return out
+
     def ticker_price(self, symbol: str | None = None) -> list[dict[str, Any]]:
         """GET /fapi/v1/ticker/price
 
@@ -658,7 +683,7 @@ class BinanceUsdmClient:
 
     def min_marketable_quantity_string(self, symbol: str, *, prefer_market: bool = True) -> str:
         """返回按 LOT / MARKET_LOT_SIZE step 格式化后的最小可交易数量（字符串 DECIMAL）。"""
-        spec = self.get_coin_m_spec(symbol)
+        spec = self.get_usdm_spec(symbol)
         if spec is None:
             raise BinanceHTTPError(f"exchangeInfo 中找不到 symbol={symbol!r}")
 
@@ -673,8 +698,8 @@ class BinanceUsdmClient:
 BinanceCoinMClient = BinanceUsdmClient
 
 
-class BinanceCoinMSignedClient(BinanceUsdmClient):
-    """Binance USD-M Futures Signed REST（`/fapi/v1`；类名历史保留）。
+class BinanceUsdmSignedClient(BinanceUsdmClient):
+    """Binance USD-M Futures Signed REST（`/fapi/v1`）。
 
     - 必选配置：`BinanceClientConfig.api_key`、`api_secret`（不得写入日志）。
     - 每个请求附带 `timestamp`（基于 `estimated_server_time_ms()`）、`recvWindow` 与 `signature`（HMAC SHA256）。
@@ -691,7 +716,7 @@ class BinanceCoinMSignedClient(BinanceUsdmClient):
 
     def __repr__(self) -> str:
         return (
-            "<BinanceCoinMSignedClient"
+            "<BinanceUsdmSignedClient"
             f" rest_base={self._config.rest_base!r}"
             f" product={self._config.product!r}"
             f" api_prefix={self._config.api_prefix!r}"
@@ -725,6 +750,18 @@ class BinanceCoinMSignedClient(BinanceUsdmClient):
         qs = build_signed_query_string(merged, signing_secret=str(secret))
         url = self._build_rest_url(path, qs, api_prefix=api_prefix)
         return self._http_json_request(method, url, send_api_key_if_configured=True)
+
+    def dual_side_position(self) -> bool:
+        """GET /fapi/v1/positionSide/dual — True 为 Hedge Mode（双向持仓），False 为 One-way。"""
+        data = self._request_json_signed("GET", "/positionSide/dual")
+        if not isinstance(data, Mapping):
+            raise BinanceHTTPError(f"unexpected positionSide/dual payload: {type(data)}")
+        raw = data.get("dualSidePosition")
+        if isinstance(raw, bool):
+            return raw
+        if isinstance(raw, str):
+            return raw.strip().lower() == "true"
+        raise BinanceHTTPError(f"unexpected dualSidePosition: {raw!r}")
 
     def account(self) -> dict[str, Any]:
         """GET /fapi/v2/account（v1 已下线；下单等仍用 config.api_prefix，默认 /fapi/v1）。"""
@@ -945,7 +982,7 @@ class BinanceCoinMSignedClient(BinanceUsdmClient):
             raise BinanceHTTPError(f"positionRisk 中无合约 {symbol!r} 的非零持仓")
 
         amt_s = chosen["positionAmt"]
-        spec_local = self.get_coin_m_spec(symbol)
+        spec_local = self.get_usdm_spec(symbol)
         step_s = spec_local.market_step_size if spec_local is not None and spec_local.market_step_size else "1"
 
         ps_raw = chosen.get("positionSide")
@@ -982,5 +1019,5 @@ class BinanceCoinMSignedClient(BinanceUsdmClient):
         )
 
 
-# 3.0 推荐别名
-BinanceUsdmSignedClient = BinanceCoinMSignedClient
+# 2.0 COIN-M 历史别名（deprecated；新代码请用 BinanceUsdm*）
+BinanceCoinMSignedClient = BinanceUsdmSignedClient

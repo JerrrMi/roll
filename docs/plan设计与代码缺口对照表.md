@@ -11,12 +11,12 @@
 | A. 核心滚仓策略   | 8           | 8    | 0    | 0    |
 | B. 出场与持仓管理 | 7           | 7    | 0    | 0    |
 | C. 风控与熔断     | 8           | 8    | 0    | 0    |
-| D. USD-M 基础设施 | 10          | 9    | 1    | 0    |
-| E. 交易所账户模式 | 4           | 2    | 2    | 0    |
-| F. 回测与参数校准 | 5           | 4    | 0    | 1    |
-| G. 运维与状态机   | 6           | 5    | 1    | 0    |
+| D. USD-M 基础设施 | 10          | 10   | 0    | 0    |
+| E. 交易所账户模式 | 4           | 4    | 0    | 0    |
+| F. 回测与参数校准 | 5           | 5    | 0    | 0    |
+| G. 运维与状态机   | 6           | 6    | 0    | 0    |
 
-**结论**：3.0 **迁移层、P1 风险闭环与 P2 策略完善（追踪/ATR 止损、最大持仓时间、margin type、示例 YAML）已落地**；**P0 滚仓加仓仍为后续重点**。
+**结论**：3.0 **迁移层、P1 风险闭环、P2 策略完善与 P3 工程质量已落地**。
 
 ---
 
@@ -80,7 +80,7 @@
 | D7   | 对账 + 单标的锁恢复                     | ✅        | `reconcile_usdm_account`, `PositionManager`                  | —          | —      |                             |
 | D8   | STOP_MARKET closePosition 保护单        | ✅        | `new_stop_market_close_position`                             | —          | —      |                             |
 | D9   | dry-run / run-loop / systemd / 验收文档 | ✅        | README + `docs/live-go-live-acceptance.md`                   | —          | —      |                             |
-| D10  | 清理误导性 COIN-M 命名                  | ⚠️        | 仍保留 `BinanceCoinMSignedClient` 等历史别名；部分注释仍写 `/dapi` | **P3**     | S      | 重命名或文档标注 deprecated |
+| D10  | 清理误导性 COIN-M 命名                  | ✅        | 主名 `BinanceUsdmSignedClient`；`BinanceCoinM*` 为 deprecated 别名；注释已改 `/fapi` | —          | —      | `binance_client.py`, 各模块 import |
 
 ---
 
@@ -91,7 +91,7 @@
 | E1   | **逐仓/全仓** 须在配置或文档明确        | ✅        | `binance.margin_type` + README「保证金模式」；默认 ISOLATED  | —          | —      | `config/*.yaml`, `README.md`       |
 | E2   | 启动前校验/设置 margin type             | ✅        | `account_modes.ensure_symbol_margin_type` + `change_margin_type` | —          | —      | `account_modes.py`, `binance_client.py` |
 | E3   | **单向净持仓** 为目标；hedge 异常应拒绝 | ✅        | hedge → `set_halt_for_manual_review` + `[live.alert]` 日志   | —          | —      | `usdm_auto_trade.py`             |
-| E4   | 双向模式下正确平指定腿                  | ⚠️        | `close_symbol_position_market` 有 positionSide 逻辑，但未主动拒绝 hedge 开仓 | **P2**     | S      | 开仓前账户模式检查               |
+| E4   | 双向模式下正确平指定腿；**开仓前拒绝 hedge 模式** | ✅        | 开仓前 `ensure_one_way_position_mode_before_open`；hedge → halt + `[live.alert]`；平仓仍用 `positionSide` 逻辑 | —          | —      | `account_modes.py`, `usdm_auto_trade.py` |
 
 ---
 
@@ -100,8 +100,8 @@
 | ID   | Plan 设计                           | 当前代码 | 缺口说明                               | 建议优先级 | 工作量 | 主要落点                 |
 | ---- | ----------------------------------- | -------- | -------------------------------------- | ---------- | ------ | ------------------------ |
 | F1   | USD-M K 线 + USDT PnL 回测          | ✅        | `backtest.py`                          | —          | —      |                          |
-| F2   | 手续费 + 滑点                       | ✅        | 回测有；**live 不计**                  | **P3**     | S      | 可选模拟/日志            |
-| F3   | **资金费率** 纳入持仓成本           | ❌        | 无 funding 数据与扣减                  | **P3**     | M      | `backtest.py`, 可选 live |
+| F2   | 手续费 + 滑点                       | ✅        | 回测有；live 发单前 `[live][cost_est]` 估算日志（`estimated_taker_fee_bps` / `estimated_slippage_bps`） | —          | —      | `cost_estimate.py`, `usdm_auto_trade.py` |
+| F3   | **资金费率** 纳入持仓成本           | ✅        | 回测默认拉 `/fapi/v1/fundingRate` 持仓期扣减；`--no-funding` 可关 | —          | —      | `backtest.py`, `binance_client.py` |
 | F4   | 参数扫描（stop/kelly/threshold 等） | ✅        | `DEFAULT_SENSITIVITY_GRID` + CLI       | —          | —      |                          |
 | F5   | **USD-M 重校准后的推荐默认参数**    | ✅        | example YAML：`trail/atr/max_hold`、`risk:`、`kelly` 等 USD-M 推荐集 | —          | —      | `config/*.yaml`, `README.md`       |
 
@@ -111,7 +111,7 @@
 
 | ID   | Plan 设计                              | 当前代码 | 缺口说明                                                 | 建议优先级 | 工作量 | 主要落点             |
 | ---- | -------------------------------------- | -------- | -------------------------------------------------------- | ---------- | ------ | -------------------- |
-| G1   | `order_executor.py` 负责下单/撤单/确认 | ⚠️        | **仍是骨架**；实际逻辑在 `usdm_auto_trade.py`            | **P3**     | M      | 重构或删并文档说明   |
+| G1   | `order_executor.py` 负责下单/撤单/确认 | ✅        | 模块已 **正式废弃**；执行在 `usdm_auto_trade.py`；实例化触发 DeprecationWarning | —          | —      | `order_executor.py`, README 架构说明 |
 | G2   | 异常时 pause 新开、保留持仓管理        | ✅        | 异常/circuit 均 `pause_opening_entries`；持仓管理独立分支     | —          | —      | `usdm_auto_trade.py` |
 | G3   | 状态持久化（symbol/方向/止损/extreme） | ✅        | `state_store` + `live` leaf                              | —          | —      |                      |
 | G4   | live 单进程互斥锁                      | ✅        | `process_lock.py`                                        | —          | —      |                      |
@@ -154,14 +154,15 @@
 | 12   | **C8**：`risk:` YAML 块补全至 testnet example                | ✅    | testnet/live/example 均含完整 `risk:` 块                     |
 | 13   | **E1–E2**：margin type 检查/设置                             | ✅    | `binance.margin_type` + 开仓前 `ensure_symbol_margin_type`；不匹配抛错 |
 | 14   | **F5**：USD-M 推荐参数写入 example YAML                      | ✅    | 见 `config/settings.*.example.yaml` 与 README「策略保护止损」 |
+| 15   | **E4**：开仓前 hedge 模式检查                                | ✅    | hedge 账户下 `[live.alert]` + halt；one-way 日志 `[live][position_mode]` |
 
 ---
 
-### P3 — 工程质量（不阻塞交易）
+### P3 — 工程质量（不阻塞交易）✅ 已完成
 
-| 顺序 | 任务                                    |
-| ---- | --------------------------------------- |
-| 15   | **D10**：COIN-M 别名/注释清理           |
-| 16   | **G1**：`order_executor` 合并或正式废弃 |
-| 17   | **F3**：回测资金费率                    |
-| 18   | **F2**：live 侧手续费/滑点估算日志      |
+| 顺序 | 任务                                    | 状态 | 验收标准                                                     |
+| ---- | --------------------------------------- | ---- | ------------------------------------------------------------ |
+| 15   | **D10**：COIN-M 别名/注释清理           | ✅    | 代码主用 `BinanceUsdm*`；`BinanceCoinM*` 为别名；无当前路径 `/dapi` 注释 |
+| 16   | **G1**：`order_executor` 合并或正式废弃 | ✅    | `OrderExecutor()` 触发 DeprecationWarning；dry-run 日志指向 `usdm_auto_trade` |
+| 17   | **F3**：回测资金费率                    | ✅    | `pytest tests/test_p3_engineering.py`；回测日志 `[bt funding]`；`--no-funding` |
+| 18   | **F2**：live 侧手续费/滑点估算日志      | ✅    | 开/加/平仓前 `[live][cost_est]`；默认 fee_bps=5 slip_bps=2 |

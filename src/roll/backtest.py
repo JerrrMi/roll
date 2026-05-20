@@ -9,6 +9,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from roll.binance_client import BinanceUsdmClient, UsdMFuturesSymbol
 from roll.coinm_auto_trade import desired_protective_stop_price, should_exit_from_trend
+from roll.cost_estimate import apply_slippage_entry, apply_slippage_exit
 from roll.position_roll import has_float_profit, trend_allows_add
 from roll.risk import (
     KellyVariant,
@@ -138,6 +139,7 @@ class BacktestTrade:
     contract_multiplier: float
     pnl_gross: float
     fees: float
+    funding: float
     pnl_net: float
     exit_reason: str
 
@@ -155,17 +157,86 @@ class BacktestResult:
 
 
 def _apply_slippage_entry(side: Side, px: float, slip_bps: float) -> float:
-    s = slip_bps / 10_000.0
-    if side == "long":
-        return px * (1.0 + s)
-    return px * (1.0 - s)
+    return apply_slippage_entry(side, px, slip_bps)
 
 
 def _apply_slippage_exit(side: Side, px: float, slip_bps: float) -> float:
-    s = slip_bps / 10_000.0
+    return apply_slippage_exit(side, px, slip_bps)
+
+
+def funding_cashflow_usdt(*, side: Side, quantity: float, mark_px: float, funding_rate: float) -> float:
+    """正数表示账户 USDT 流出（long 在 rate>0 时支付）。"""
+    notional = abs(quantity) * mark_px
     if side == "long":
-        return px * (1.0 - s)
-    return px * (1.0 + s)
+        return notional * funding_rate
+    return -notional * funding_rate
+
+
+def fetch_funding_rate_series(
+    client: BinanceUsdmClient,
+    symbol: str,
+    *,
+    start_ms: int,
+    end_ms: int,
+    limit: int = 1000,
+) -> list[tuple[int, float]]:
+    """分页拉取 [start_ms, end_ms] 内 fundingTime 序列。"""
+    sym = symbol.upper()
+    start_ms = int(start_ms)
+    end_ms = int(end_ms)
+    seen: set[int] = set()
+    rows: list[tuple[int, float]] = []
+    cur = start_ms
+    while cur <= end_ms:
+        batch = client.funding_rate_history(
+            sym,
+            start_time_ms=cur,
+            end_time_ms=end_ms,
+            limit=limit,
+        )
+        if not batch:
+            break
+        progressed = False
+        for row in batch:
+            ft_raw = row.get("fundingTime")
+            rate_raw = row.get("fundingRate")
+            if ft_raw is None or rate_raw is None:
+                continue
+            ft = int(ft_raw)
+            if ft < start_ms or ft > end_ms or ft in seen:
+                continue
+            seen.add(ft)
+            rows.append((ft, float(rate_raw)))
+            progressed = True
+        last_ft = int(batch[-1].get("fundingTime", cur))
+        nxt = last_ft + 1
+        if nxt <= cur:
+            break
+        cur = nxt
+        if len(batch) < limit:
+            break
+        if not progressed:
+            break
+    rows.sort(key=lambda x: x[0])
+    return rows
+
+
+def load_backtest_funding_rates(
+    client: BinanceUsdmClient,
+    symbols: Sequence[str],
+    *,
+    start_ms: int,
+    end_ms: int,
+) -> dict[str, list[tuple[int, float]]]:
+    out: dict[str, list[tuple[int, float]]] = {}
+    for sym in symbols:
+        out[sym.upper()] = fetch_funding_rate_series(
+            client,
+            sym,
+            start_ms=start_ms,
+            end_ms=end_ms,
+        )
+    return out
 
 
 def _float_step(step_raw: str) -> float:
@@ -284,6 +355,8 @@ class BacktestConfig:
     fee_rate: float = 0.0005
     """每边 taker 费率；开仓+平仓共 2 次。"""
     slippage_bps: float = 2.0
+    include_funding: bool = True
+    """持仓期间按历史 fundingRate 扣减/计入 cash。"""
     warmup_extra_days: float = 140.0
     risk_limits: RiskLimits | None = None
     """若 None 则使用默认 RiskLimits()。"""
@@ -350,6 +423,7 @@ def run_backtest(
     intervals: tuple[str, ...] | None = None,
     trail_stop_fraction: float | None = None,
     emit: Callable[[str], None] | None = None,
+    funding_rates: Mapping[str, Sequence[tuple[int, float]]] | None = None,
 ) -> BacktestResult:
     """在已对齐的 15m 时间轴上推进；`data[symbol][interval]` 为按 open_time 升序。"""
     _ = client
@@ -385,6 +459,32 @@ def run_backtest(
     extreme: float = 0.0
     add_count: int = 0
     cooldown_until_i: int = -1
+    last_funding_ms: int = 0
+    pos_funding_paid: float = 0.0
+    funding_map = {
+        k.upper(): list(v) for k, v in (funding_rates or {}).items()
+    }
+
+    def apply_funding_events(*, sym: str, side_p: Side, mark_px: float, t_ms: int) -> None:
+        nonlocal cash, last_funding_ms, pos_funding_paid
+        if not cfg.include_funding or qty <= 0:
+            return
+        events = funding_map.get(sym.upper(), [])
+        for ft_ms, rate in events:
+            if last_funding_ms < ft_ms <= t_ms:
+                pay = funding_cashflow_usdt(
+                    side=side_p,
+                    quantity=qty,
+                    mark_px=mark_px,
+                    funding_rate=rate,
+                )
+                cash -= pay
+                pos_funding_paid += pay
+                last_funding_ms = ft_ms
+                out_log(
+                    f"[bt funding] sym={sym} side={side_p} t_ms={ft_ms} rate={rate:.8g} "
+                    f"pay≈{pay:.4f} cash≈{cash:.4f}"
+                )
 
     def total_equity(mid_px: float | None) -> float:
         if pos_sym is None or pos_side is None or mid_px is None or qty <= 0:
@@ -400,12 +500,13 @@ def run_backtest(
         reason: str,
     ) -> None:
         nonlocal cash, pos_sym, pos_side, qty, cm, entry_ref, extreme, add_count
+        nonlocal last_funding_ms, pos_funding_paid
         ex = _apply_slippage_exit(side_p, px_exit_raw, cfg.slippage_bps)
         g = _pnl_quote(side_p, entry_ref, ex, qty, cm)
         fee_close = abs(qty) * ex * cfg.fee_rate
         fee_open = abs(qty) * entry_ref * cfg.fee_rate
         fe_total = fee_open + fee_close
-        pnl_net = g - fe_total
+        pnl_net = g - fe_total - pos_funding_paid
         cash += g - fee_close
         engine.monitor.record_realized_pnl(ts_sec, pnl_net)
         trades.append(
@@ -420,7 +521,8 @@ def run_backtest(
                 contract_multiplier=cm,
                 pnl_gross=g,
                 fees=fe_total,
-                pnl_net=g - fe_total,
+                funding=pos_funding_paid,
+                pnl_net=pnl_net,
                 exit_reason=reason,
             )
         )
@@ -431,6 +533,8 @@ def run_backtest(
         entry_ref = 0.0
         extreme = 0.0
         add_count = 0
+        last_funding_ms = 0
+        pos_funding_paid = 0.0
 
     entry_ts = 0.0
     min_need = int(trend_params.min_bars_soft) + 50
@@ -449,6 +553,7 @@ def run_backtest(
             hi = float(cbar.high)
             lo = float(cbar.low)
             mark_eq = px_close
+            apply_funding_events(sym=pos_sym, side_p=pos_side, mark_px=px_close, t_ms=t_close_ms)
         else:
             px_close = float(bar.close)
             hi = float(bar.high)
@@ -658,6 +763,8 @@ def run_backtest(
                 extreme = ohi if sk == "long" else olo
                 add_count = 0
                 entry_ts = ts_sec
+                last_funding_ms = t_close_ms
+                pos_funding_paid = 0.0
                 out_log(
                     f"[bt open] i={i} sym={sym_r} side={sk} qty={q:.8g} entry={entry_eff:.8g} "
                     f"fee_open={fee_open:.4f} score={sig_r.score:+.4f}"
@@ -719,6 +826,8 @@ def run_backtest(
             "min_unrealized_profit_fraction": strat_params.min_unrealized_profit_fraction,
             "fee_rate": cfg.fee_rate,
             "slippage_bps": cfg.slippage_bps,
+            "include_funding": cfg.include_funding,
+            "total_funding_paid": sum(t.funding for t in trades),
         },
     )
 

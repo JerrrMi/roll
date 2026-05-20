@@ -113,7 +113,7 @@ class TrendModelParams:
 
 
 def parse_binance_klines(rows: Sequence[Sequence[Any]]) -> list[Candle]:
-    """将 GET /dapi/v1/klines 单行数组转为 Candle。"""
+    """将 GET /fapi/v1/klines 单行数组转为 Candle。"""
     out: list[Candle] = []
     for r in rows:
         if len(r) < 6:

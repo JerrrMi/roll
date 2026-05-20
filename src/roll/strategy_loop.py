@@ -7,11 +7,11 @@ from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Sequence
 
 from roll.binance_client import (
-    BinanceCoinMClient,
-    BinanceCoinMSignedClient,
-    CoinMFuturesSymbol,
+    BinanceUsdmClient,
+    BinanceUsdmSignedClient,
+    UsdMFuturesSymbol,
     InsufficientMonitorableSymbolsError,
-    select_monitorable_coin_m_symbols,
+    select_monitorable_usdm_symbols,
 )
 from roll.logger import get_logger
 from roll.market_data import parse_candidate_assets
@@ -66,6 +66,9 @@ class StrategyLoopParams:
     max_add_per_round: int = 2
     # 加仓前持仓未实现收益率下限（相对均价）；0 表示任意正浮盈即可
     min_unrealized_profit_fraction: float = 0.0
+    # live 侧手续费/滑点估算（仅日志，默认与 backtest CLI 一致）
+    estimated_taker_fee_bps: float = 5.0
+    estimated_slippage_bps: float = 2.0
 
 
 def parse_strategy_loop_params(settings: Mapping[str, Any]) -> StrategyLoopParams:
@@ -152,6 +155,19 @@ def parse_strategy_loop_params(settings: Mapping[str, Any]) -> StrategyLoopParam
         else StrategyLoopParams.min_unrealized_profit_fraction
     )
 
+    etf = raw.get("estimated_taker_fee_bps")
+    fee_bps = (
+        float(etf)
+        if isinstance(etf, (int, float)) and not isinstance(etf, bool)
+        else StrategyLoopParams.estimated_taker_fee_bps
+    )
+    esb = raw.get("estimated_slippage_bps")
+    slip_bps = (
+        float(esb)
+        if isinstance(esb, (int, float)) and not isinstance(esb, bool)
+        else StrategyLoopParams.estimated_slippage_bps
+    )
+
     return StrategyLoopParams(
         loop_interval_sec=max(interval, 1.0),
         klines_limit=max(klines_lim, 50),
@@ -172,6 +188,8 @@ def parse_strategy_loop_params(settings: Mapping[str, Any]) -> StrategyLoopParam
         open_quantity_mode=oqm,
         max_add_per_round=max(0, max_add),
         min_unrealized_profit_fraction=max(min_upnl_frac, 0.0),
+        estimated_taker_fee_bps=max(fee_bps, 0.0),
+        estimated_slippage_bps=max(slip_bps, 0.0),
     )
 
 
@@ -208,7 +226,7 @@ def _float_step(step_raw: str) -> float:
     return float(step_raw)
 
 
-def _fetch_symbol_price(client: BinanceCoinMClient, symbol: str) -> float:
+def _fetch_symbol_price(client: BinanceUsdmClient, symbol: str) -> float:
     rows = client.ticker_price(symbol)
     if not rows:
         raise ValueError(f"ticker_price empty for {symbol!r}")
@@ -219,8 +237,8 @@ def _fetch_symbol_price(client: BinanceCoinMClient, symbol: str) -> float:
 
 
 def evaluate_candidates_with_public_rest(
-    client: BinanceCoinMClient,
-    specs: Sequence[CoinMFuturesSymbol],
+    client: BinanceUsdmClient,
+    specs: Sequence[UsdMFuturesSymbol],
     *,
     params: StrategyLoopParams,
     intervals: tuple[str, ...],
@@ -251,8 +269,8 @@ def evaluate_candidates_with_public_rest(
 def try_select_single_symbol(
     *,
     ranked: Sequence[tuple[str, TrendSignal]],
-    specs_by_symbol: Mapping[str, CoinMFuturesSymbol],
-    client: BinanceCoinMClient,
+    specs_by_symbol: Mapping[str, UsdMFuturesSymbol],
+    client: BinanceUsdmClient,
     risk_engine: RiskEngine,
     params: StrategyLoopParams,
     ts: float,
@@ -314,13 +332,13 @@ def try_select_single_symbol(
 def run_strategy_iteration(
     *,
     settings: Mapping[str, Any],
-    client: BinanceCoinMClient,
+    client: BinanceUsdmClient,
     params: StrategyLoopParams | None = None,
     emit: LoggerFn | None = None,
     dry_run: bool = True,
     intervals: tuple[str, ...] | None = None,
     trend_params: TrendModelParams | None = None,
-    signed_client: BinanceCoinMSignedClient | None = None,
+    signed_client: BinanceUsdmSignedClient | None = None,
     position_manager=None,
     state_store=None,
     clear_entry_pause: bool = False,
@@ -336,8 +354,8 @@ def run_strategy_iteration(
         from roll.position_manager import PositionManager
         from roll.state_store import StateStore as _RtStore
 
-        if signed_client is None or not isinstance(signed_client, BinanceCoinMSignedClient):
-            raise ValueError("live run_strategy_iteration 需要 BinanceCoinMSignedClient signed_client")
+        if signed_client is None or not isinstance(signed_client, BinanceUsdmSignedClient):
+            raise ValueError("live run_strategy_iteration 需要 BinanceUsdmSignedClient signed_client")
         if position_manager is None or not isinstance(position_manager, PositionManager):
             raise ValueError("live run_strategy_iteration 需要 PositionManager(position_manager)")
         if state_store is None or not isinstance(state_store, _RtStore):
@@ -360,9 +378,9 @@ def run_strategy_iteration(
     candidates = parse_candidate_assets(dict(settings))
     client.sync_server_time()
 
-    specs_full = client.list_coin_m_specs()
+    specs_full = client.list_usdm_specs()
     try:
-        matched, report = select_monitorable_coin_m_symbols(
+        matched, report = select_monitorable_usdm_symbols(
             specs_full,
             candidates,
             min_count=p.min_monitor_symbols,
@@ -447,16 +465,16 @@ def run_strategy_iteration(
         f"notional_usdt≈{ntl:.4f}"
     )
     out(f"  eff_kelly_fraction≈{oe_pick.effective_kelly_fraction:.6f}")
-    out("[dry-run] order_executor bypass — zero signed/order REST calls.")
+    out("[dry-run] usdm_auto_trade bypass — zero signed/order REST calls.")
 
 
 def run_strategy_forever(
     *,
     settings: Mapping[str, Any],
-    client: BinanceCoinMClient,
+    client: BinanceUsdmClient,
     dry_run: bool = True,
     params: StrategyLoopParams | None = None,
-    signed_client: BinanceCoinMSignedClient | None = None,
+    signed_client: BinanceUsdmSignedClient | None = None,
     position_manager=None,
     state_store=None,
     clear_entry_pause_once: bool = False,

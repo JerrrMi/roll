@@ -11,12 +11,13 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Callable, Mapping, Sequence
 
 from roll.binance_client import (
-    BinanceCoinMSignedClient,
+    BinanceUsdmSignedClient,
     BinanceHTTPError,
     UsdMFuturesSymbol,
     format_price_to_tick_decimal_str,
     select_monitorable_usdm_symbols,
 )
+from roll.cost_estimate import format_live_cost_est
 from roll.logger import get_logger
 from roll.market_data import parse_candidate_assets
 from roll.offline_trend import evaluate_symbol_offline_public
@@ -73,7 +74,7 @@ from roll.usdm_account import (
 LoggerFn = Callable[[str], None]
 
 
-def reconcile_and_restore_pm(pm: PositionManager, client: BinanceCoinMSignedClient) -> None:
+def reconcile_and_restore_pm(pm: PositionManager, client: BinanceUsdmSignedClient) -> None:
     client.sync_server_time()
     outcome = reconcile_usdm_account(client.position_risk(), client.open_orders())
     pm.restore_from_exchange(outcome)
@@ -124,7 +125,7 @@ def resolve_open_quantity_raw(*, spec: UsdMFuturesSymbol, risk_quantity: float, 
 
 
 def load_monitorable_specs(
-    signed_client: BinanceCoinMSignedClient,
+    signed_client: BinanceUsdmSignedClient,
     settings: Mapping[str, Any],
     *,
     min_count: int,
@@ -136,7 +137,7 @@ def load_monitorable_specs(
 
 def log_peer_symbol_signals_while_in_position(
     *,
-    signed_client: BinanceCoinMSignedClient,
+    signed_client: BinanceUsdmSignedClient,
     active_symbol: str,
     matched: Sequence[UsdMFuturesSymbol],
     params: StrategyLoopParams,
@@ -190,7 +191,7 @@ def _is_protective_close_order(row: Mapping[str, Any]) -> bool:
     return ot in {"STOP_MARKET", "STOP", "TAKE_PROFIT_MARKET", "TAKE_PROFIT"}
 
 
-def cancel_protective_close_orders(client: BinanceCoinMSignedClient, symbol: str, *, emit: LoggerFn) -> None:
+def cancel_protective_close_orders(client: BinanceUsdmSignedClient, symbol: str, *, emit: LoggerFn) -> None:
     sym = symbol.upper()
     for row in client.open_orders(symbol=sym):
         if str(row.get("symbol", "")).upper() != sym or not _is_protective_close_order(dict(row)):
@@ -237,7 +238,7 @@ def desired_protective_stop_price(
 
 
 def resolve_atr_for_symbol(
-    client: BinanceCoinMSignedClient,
+    client: BinanceUsdmSignedClient,
     symbol: str,
     *,
     interval: str,
@@ -469,7 +470,7 @@ def persist_autotrade_runtime(
     )
 
 
-def fetch_ticker_px(client: BinanceCoinMSignedClient, symbol: str) -> float:
+def fetch_ticker_px(client: BinanceUsdmSignedClient, symbol: str) -> float:
     rows = client.ticker_price(symbol)
     if not rows:
         raise ValueError(f"ticker empty {symbol}")
@@ -480,7 +481,7 @@ def fetch_ticker_px(client: BinanceCoinMSignedClient, symbol: str) -> float:
 
 
 def place_protective_stop_market_close(
-    client: BinanceCoinMSignedClient,
+    client: BinanceUsdmSignedClient,
     *,
     symbol: str,
     hold_side: Side,
@@ -495,7 +496,7 @@ def place_protective_stop_market_close(
 
 def ensure_or_roll_protective_stop(
     *,
-    client: BinanceCoinMSignedClient,
+    client: BinanceUsdmSignedClient,
     symbol: str,
     spec: UsdMFuturesSymbol,
     hold_side: Side,
@@ -541,7 +542,7 @@ def ensure_or_roll_protective_stop(
 
 
 def _protective_atr_kwargs(
-    client: BinanceCoinMSignedClient,
+    client: BinanceUsdmSignedClient,
     symbol: str,
     pcfg: StrategyLoopParams,
 ) -> dict[str, float | None]:
@@ -559,7 +560,7 @@ def _protective_atr_kwargs(
 
 def _execute_open_flow(
     *,
-    signed_client: BinanceCoinMSignedClient,
+    signed_client: BinanceUsdmSignedClient,
     pm: PositionManager,
     symbol: str,
     spec: UsdMFuturesSymbol,
@@ -581,6 +582,16 @@ def _execute_open_flow(
     try:
         signed_client.set_leverage(symbol=symbol, leverage=params.initial_leverage)
         qty_s = format_market_quantity_str(spec, qty_pick)
+        emit(
+            format_live_cost_est(
+                intent="open",
+                side=side_pick,
+                quantity=qty_pick,
+                mark_px=mark,
+                fee_bps=params.estimated_taker_fee_bps,
+                slippage_bps=params.estimated_slippage_bps,
+            )
+        )
         emit(
             f"[live] MARKET_OPEN symbol={symbol} side={side_pick} qty={qty_s} "
             f"leverage={params.initial_leverage}x mode={params.open_quantity_mode}"
@@ -633,7 +644,7 @@ def _execute_open_flow(
 
 def _execute_add_flow(
     *,
-    signed_client: BinanceCoinMSignedClient,
+    signed_client: BinanceUsdmSignedClient,
     symbol: str,
     spec: UsdMFuturesSymbol,
     hold_side: Side,
@@ -643,12 +654,24 @@ def _execute_add_flow(
     live_leaf: dict[str, Any],
     trail_frac: float | None,
     adverse_frac: float,
+    fee_bps: float = 5.0,
+    slippage_bps: float = 2.0,
     atr: float | None = None,
     atr_stop_k: float | None = None,
 ) -> None:
     """持仓中 MARKET 加仓（不经过 ENTERING 状态机）。"""
     qty_s = format_market_quantity_str(spec, qty_add)
     emit(f"[live] MARKET_ADD symbol={symbol} side={hold_side} qty={qty_s} mark≈{mark:.8g}")
+    emit(
+        format_live_cost_est(
+            intent="add",
+            side=hold_side,
+            quantity=qty_add,
+            mark_px=mark,
+            fee_bps=fee_bps,
+            slippage_bps=slippage_bps,
+        )
+    )
     ot = signed_client.new_market_order(
         symbol=symbol,
         side=("BUY" if hold_side == "long" else "SELL"),
@@ -696,7 +719,7 @@ def _execute_add_flow(
 
 def _try_position_roll_add(
     *,
-    signed_client: BinanceCoinMSignedClient,
+    signed_client: BinanceUsdmSignedClient,
     symbol: str,
     spec: UsdMFuturesSymbol,
     hold: Side,
@@ -812,6 +835,8 @@ def _try_position_roll_add(
         live_leaf=live_leaf,
         trail_frac=trail_frac,
         adverse_frac=float(pcfg.stop_adverse_fraction),
+        fee_bps=pcfg.estimated_taker_fee_bps,
+        slippage_bps=pcfg.estimated_slippage_bps,
         atr=atr,
         atr_stop_k=atr_stop_k,
     )
@@ -820,7 +845,7 @@ def _try_position_roll_add(
 def run_live_strategy_iteration(
     *,
     settings: Mapping[str, Any],
-    signed_client: BinanceCoinMSignedClient,
+    signed_client: BinanceUsdmSignedClient,
     position_manager: PositionManager,
     state_store: StateStore,
     params: StrategyLoopParams | None = None,
@@ -851,7 +876,12 @@ def run_live_strategy_iteration(
         if pu != su:
             raise RuntimeError("自动交易下 strategy.public_rest_base 必须与 binance.rest_base（signed）完全一致或留空")
 
-    from roll.account_modes import ensure_symbol_margin_type, parse_margin_mode_settings
+    from roll.account_modes import (
+        ensure_one_way_position_mode_before_open,
+        ensure_symbol_margin_type,
+        HedgePositionModeError,
+        parse_margin_mode_settings,
+    )
 
     tpl = TrendModel(trend_params) if trend_params is not None else TrendModel()
     tpar = tpl.params
@@ -976,6 +1006,17 @@ def run_live_strategy_iteration(
                     cancel_protective_close_orders(signed_client, sym, emit=out)
                     position_manager.begin_exit(sym)
                     try:
+                        out(
+                            format_live_cost_est(
+                                intent="exit",
+                                side=hold,
+                                quantity=qty_exit,
+                                mark_px=mrk,
+                                fee_bps=pcfg.estimated_taker_fee_bps,
+                                slippage_bps=pcfg.estimated_slippage_bps,
+                                is_exit=True,
+                            )
+                        )
                         cx = signed_client.close_symbol_position_market(symbol=sym)
                         out(f"[live] exit MARKET oid={cx.get('orderId')} reason={exit_reason}")
                         ts_exit = time.time()
@@ -1233,24 +1274,33 @@ def run_live_strategy_iteration(
                     out(f"[risk_try rank={rank_idx}] symbol={spx_v} side={sk_side} REJECT {reasons_join}")
 
                 if sym_pick_o and side_pick_o and qty_for_open > 0:
-                    ensure_symbol_margin_type(signed_client, sym_pick_o, margin_cfg, emit=out)
-                    px_open = fetch_ticker_px(signed_client, sym_pick_o)
-                    prot_open = _protective_atr_kwargs(signed_client, sym_pick_o, pcfg)
-                    _execute_open_flow(
-                        signed_client=signed_client,
-                        pm=position_manager,
-                        symbol=sym_pick_o,
-                        spec=specs_map[sym_pick_o.upper()],
-                        side_pick=side_pick_o,
-                        qty_pick=qty_for_open,
-                        params=pcfg,
-                        mark=px_open,
-                        emit=out,
-                        live_leaf=live_leaf,
-                        trail_frac=trail_frac,
-                        atr=prot_open.get("atr"),
-                        atr_stop_k=prot_open.get("atr_stop_k"),
-                    )
+                    try:
+                        ensure_one_way_position_mode_before_open(signed_client, emit=out)
+                    except HedgePositionModeError as hedge_mode_exc:
+                        out(
+                            f"[live.alert] {hedge_mode_exc} — halting automatic trading; "
+                            "manual review required (switch to one-way position mode)"
+                        )
+                        position_manager.set_halt_for_manual_review(str(hedge_mode_exc))
+                    else:
+                        ensure_symbol_margin_type(signed_client, sym_pick_o, margin_cfg, emit=out)
+                        px_open = fetch_ticker_px(signed_client, sym_pick_o)
+                        prot_open = _protective_atr_kwargs(signed_client, sym_pick_o, pcfg)
+                        _execute_open_flow(
+                            signed_client=signed_client,
+                            pm=position_manager,
+                            symbol=sym_pick_o,
+                            spec=specs_map[sym_pick_o.upper()],
+                            side_pick=side_pick_o,
+                            qty_pick=qty_for_open,
+                            params=pcfg,
+                            mark=px_open,
+                            emit=out,
+                            live_leaf=live_leaf,
+                            trail_frac=trail_frac,
+                            atr=prot_open.get("atr"),
+                            atr_stop_k=prot_open.get("atr_stop_k"),
+                        )
 
     except InsufficientMonitorableSymbolsError:
         raise

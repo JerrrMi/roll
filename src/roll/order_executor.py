@@ -1,13 +1,12 @@
-"""下单、撤单、平仓与订单确认（骨架）。
+"""已废弃：订单执行由 ``roll.usdm_auto_trade`` 承担。
 
-实盘/ Testnet 执行层在发单前应调用注入的 ``PositionManager``：
-``begin_enter(symbol) → confirm_in_position`` / ``begin_exit``
-等（见 ``roll.position_manager``），并以 ``restore_from_exchange`` 与 Testnet REST 快照对齐，
-避免本地状态漂移导致双标的并行下单。
+Plan 1.0 骨架模块；3.0 实盘/Testnet 的 MARKET 开平仓、STOP 维护、加仓均在
+``usdm_auto_trade.py`` 内实现。本模块仅保留向后兼容，新代码请勿依赖。
 """
 
 from __future__ import annotations
 
+import warnings
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -15,9 +14,14 @@ if TYPE_CHECKING:
 
 
 class OrderExecutor:
-    """订单执行器占位；后续接入 signed API 与最小数量验收。"""
+    """已废弃占位；请使用 ``roll.usdm_auto_trade`` 中的执行函数。"""
 
     def __init__(self, position_manager: PositionManager | None = None, **_kwargs: Any) -> None:
+        warnings.warn(
+            "OrderExecutor 已废弃；下单/撤单/平仓请使用 roll.usdm_auto_trade",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self._pm = position_manager
 
     def _guard_symbol(self, symbol: str, *, intent: str) -> None:
@@ -26,7 +30,7 @@ class OrderExecutor:
         self._pm.assert_single_focus_or_raise(symbol, intent=intent)
 
     def place_order(self, *_args: Any, **_kwargs: Any) -> Any:
-        raise NotImplementedError("骨架阶段禁止真实下单")
+        raise NotImplementedError("OrderExecutor 已废弃；请使用 roll.usdm_auto_trade")
 
     def cancel_order(self, *_args: Any, **_kwargs: Any) -> Any:
-        raise NotImplementedError("骨架阶段禁止真实撤单")
+        raise NotImplementedError("OrderExecutor 已废弃；请使用 roll.usdm_auto_trade")

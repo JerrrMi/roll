@@ -289,6 +289,7 @@ def _cmd_backtest(project_root: Path, argv: list[str]) -> int:
     from roll.backtest import (
         BacktestConfig,
         load_backtest_data,
+        load_backtest_funding_rates,
         parse_risk_limits_settings,
         parse_trend_model_params,
         print_backtest_report,
@@ -329,6 +330,11 @@ def _cmd_backtest(project_root: Path, argv: list[str]) -> int:
     )
     ap.add_argument("--fee-bps", type=float, default=5.0, help="每边 taker 手续费（基点），往返自动 ×2 计入")
     ap.add_argument("--slippage-bps", type=float, default=2.0, help="买卖滑点（基点，不利方向）")
+    ap.add_argument(
+        "--no-funding",
+        action="store_true",
+        help="回测时不拉取/扣减历史资金费率",
+    )
     ap.add_argument("--initial-equity", type=float, default=10_000.0)
     ap.add_argument(
         "--sensitivity",
@@ -387,8 +393,31 @@ def _cmd_backtest(project_root: Path, argv: list[str]) -> int:
         initial_equity=float(args_bt.initial_equity),
         fee_rate=float(args_bt.fee_bps) / 10_000.0,
         slippage_bps=float(args_bt.slippage_bps),
+        include_funding=not args_bt.no_funding,
         risk_limits=limits_eff,
     )
+
+    funding_rates = None
+    if bt_cfg.include_funding:
+        try:
+            funding_rates = load_backtest_funding_rates(
+                client,
+                [s.symbol for s in matched],
+                start_ms=start_ms,
+                end_ms=end_ms,
+            )
+            total_events = sum(len(v) for v in funding_rates.values())
+            print(f"[backtest] funding events loaded: {total_events}")
+        except Exception as exc:
+            print(f"[backtest.warn] funding load failed ({exc}); continue without funding", file=sys.stderr)
+            bt_cfg = BacktestConfig(
+                initial_equity=bt_cfg.initial_equity,
+                fee_rate=bt_cfg.fee_rate,
+                slippage_bps=bt_cfg.slippage_bps,
+                include_funding=False,
+                warmup_extra_days=bt_cfg.warmup_extra_days,
+                risk_limits=bt_cfg.risk_limits,
+            )
 
     data, axis = load_backtest_data(
         client,
@@ -417,6 +446,7 @@ def _cmd_backtest(project_root: Path, argv: list[str]) -> int:
         config=bt_cfg,
         intervals=intervals,
         trail_stop_fraction=trail,
+        funding_rates=funding_rates,
     )
     print_backtest_report(res)
     if args_bt.sensitivity:
@@ -525,7 +555,7 @@ def _cmd_run_loop(project_root: Path, argv: list[str]) -> int:
 
     signed_environment = ""
     if args_loop.no_dry_run:
-        from roll.binance_client import BinanceCoinMSignedClient
+        from roll.binance_client import BinanceUsdmSignedClient
         from roll.position_manager import PositionManager
         from roll.position_manager import reconcile_usdm_account
         from roll.secrets import resolve_secrets_file_path
@@ -572,7 +602,7 @@ def _cmd_run_loop(project_root: Path, argv: list[str]) -> int:
             api_key=api_key_ck,
             api_secret=api_secret_cs,
         )
-        signed_client_live = BinanceCoinMSignedClient(cfg_s)
+        signed_client_live = BinanceUsdmSignedClient(cfg_s)
 
         secrets_resolved = resolve_secrets_file_path(
             secrets_file_cli=args_loop.secrets_file,
@@ -708,7 +738,7 @@ def _cmd_run_loop(project_root: Path, argv: list[str]) -> int:
 
 def _cmd_reconcile_state(project_root: Path, argv: list[str]) -> int:
     from roll.binance_config import BinanceConfigError, parse_binance_settings
-    from roll.binance_client import BinanceCoinMSignedClient
+    from roll.binance_client import BinanceUsdmSignedClient
     from roll.position_manager import bootstrap_position_manager_from_exchange_client
     from roll.signed_guard import ReconcileStateGuardError, assert_reconcile_rest_host_allowed
     from roll.state_store import RuntimeState
@@ -777,7 +807,7 @@ def _cmd_reconcile_state(project_root: Path, argv: list[str]) -> int:
         api_key=creds.api_key,
         api_secret=creds.api_secret,
     )
-    client = BinanceCoinMSignedClient(cfg)
+    client = BinanceUsdmSignedClient(cfg)
 
     _, outcome, (sync_ms, n_pos, n_ord) = bootstrap_position_manager_from_exchange_client(client)
 

@@ -11,7 +11,7 @@ secrets:
 
 binance:
   product: "usdm"
-  # 官方 Futures Testnet（USD-M 与 COIN-M 共用 host；路径须用 /fapi 而非 /dapi）
+  # 官方 Futures Testnet（USD-M；路径须用 /fapi/v1）
   rest_base: "https://testnet.binancefuture.com"
   api_prefix: "/fapi/v1"
   # 实盘 USD-M 示例（勿在 Testnet 任务中误用）

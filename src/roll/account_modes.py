@@ -1,14 +1,19 @@
-"""USD-M 账户模式：逐仓/全仓 marginType 校验与可选设置。"""
+"""USD-M 账户模式：逐仓/全仓 marginType 校验与可选设置；单向/双向持仓模式检查。"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Callable, Literal, Mapping
 
-from roll.binance_client import BinanceCoinMSignedClient, BinanceHTTPError
+from roll.binance_client import BinanceUsdmSignedClient, BinanceHTTPError
 
 MarginType = Literal["ISOLATED", "CROSSED"]
+PositionMode = Literal["one_way", "hedge"]
 LoggerFn = Callable[[str], None]
+
+
+class HedgePositionModeError(RuntimeError):
+    """账户处于 Hedge Mode（双向持仓），系统要求 One-way（单向净持仓）。"""
 
 
 @dataclass(frozen=True)
@@ -45,7 +50,7 @@ def normalize_margin_type_from_exchange(raw: Any) -> MarginType | None:
 
 
 def read_symbol_margin_type(
-    client: BinanceCoinMSignedClient,
+    client: BinanceUsdmSignedClient,
     symbol: str,
 ) -> MarginType | None:
     """从 positionRisk 读取 symbol 当前 marginType。"""
@@ -60,7 +65,7 @@ def read_symbol_margin_type(
 
 
 def ensure_symbol_margin_type(
-    client: BinanceCoinMSignedClient,
+    client: BinanceUsdmSignedClient,
     symbol: str,
     cfg: MarginModeSettings,
     *,
@@ -97,3 +102,60 @@ def ensure_symbol_margin_type(
                 f"change_margin_type failed: {e.msg}"
             ) from e
         log(f"[live][margin.warn] change_margin_type {sym} code={e.code} msg={e.msg}")
+
+
+def parse_dual_side_position_from_account(account: Mapping[str, Any]) -> bool | None:
+    """从 account 响应解析 dualSidePosition；True=hedge，False=one-way。"""
+    raw = account.get("dualSidePosition")
+    if raw is None:
+        raw = account.get("dual_side_position")
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str):
+        s = raw.strip().lower()
+        if s in ("true", "1"):
+            return True
+        if s in ("false", "0"):
+            return False
+    return None
+
+
+def read_dual_side_position(client: BinanceUsdmSignedClient) -> bool | None:
+    """读取账户是否为 Hedge Mode；优先 REST `/positionSide/dual`，回退 account 字段。"""
+    try:
+        return client.dual_side_position()
+    except BinanceHTTPError:
+        pass
+    try:
+        return parse_dual_side_position_from_account(client.account())
+    except BinanceHTTPError:
+        return None
+
+
+def position_mode_label(dual_side: bool | None) -> PositionMode | None:
+    if dual_side is None:
+        return None
+    return "hedge" if dual_side else "one_way"
+
+
+def ensure_one_way_position_mode_before_open(
+    client: BinanceUsdmSignedClient,
+    *,
+    emit: LoggerFn | None = None,
+) -> None:
+    """开仓前校验：Hedge Mode 必须拒绝并交由人工切换为 One-way。"""
+    log = emit or (lambda _m: None)
+    dual = read_dual_side_position(client)
+    mode = position_mode_label(dual)
+    if mode == "hedge":
+        raise HedgePositionModeError(
+            "account position mode is hedge (dualSidePosition=true); "
+            "switch Binance USD-M to one-way (单向持仓) before automatic opening"
+        )
+    if mode == "one_way":
+        log("[live][position_mode] one-way (dualSidePosition=false) OK for open")
+        return
+    log(
+        "[live][position_mode.warn] cannot read dualSidePosition — "
+        "skipping hedge guard; confirm one-way mode on exchange"
+    )
