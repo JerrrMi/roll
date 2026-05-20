@@ -56,6 +56,10 @@ class StrategyLoopParams:
     live_trading_enabled: bool = False
     # 开仓数量：`risk`（Kelly/风控）或 `min_market`（交易所最小可交易量，验收用）
     open_quantity_mode: str = "risk"
+    # 每轮趋势最多浮盈加仓次数（不含首次开仓）；Plan 建议 2–3
+    max_add_per_round: int = 2
+    # 加仓前持仓未实现收益率下限（相对均价）；0 表示任意正浮盈即可
+    min_unrealized_profit_fraction: float = 0.0
 
 
 def parse_strategy_loop_params(settings: Mapping[str, Any]) -> StrategyLoopParams:
@@ -106,6 +110,20 @@ def parse_strategy_loop_params(settings: Mapping[str, Any]) -> StrategyLoopParam
         if m in ("risk", "min_market"):
             oqm = m
 
+    mar = raw.get("max_add_per_round")
+    max_add = (
+        int(mar)
+        if isinstance(mar, int) and not isinstance(mar, bool)
+        else StrategyLoopParams.max_add_per_round
+    )
+
+    mup = raw.get("min_unrealized_profit_fraction")
+    min_upnl_frac = (
+        float(mup)
+        if isinstance(mup, (int, float)) and not isinstance(mup, bool)
+        else StrategyLoopParams.min_unrealized_profit_fraction
+    )
+
     return StrategyLoopParams(
         loop_interval_sec=max(interval, 1.0),
         klines_limit=max(klines_lim, 50),
@@ -120,6 +138,8 @@ def parse_strategy_loop_params(settings: Mapping[str, Any]) -> StrategyLoopParam
         testnet_signed_orders_enabled=testnet_signed,
         live_trading_enabled=live_en,
         open_quantity_mode=oqm,
+        max_add_per_round=max(0, max_add),
+        min_unrealized_profit_fraction=max(min_upnl_frac, 0.0),
     )
 
 

@@ -11,6 +11,7 @@ from roll.risk import (
     RiskLimits,
     adverse_fraction_from_prices,
     atr_stop_price,
+    compute_incremental_position_quantity,
     compute_position_quantity,
     effective_position_fraction,
     fixed_stop_price,
@@ -265,6 +266,103 @@ def test_risk_engine_available_margin_gate() -> None:
 def test_risk_limits_validation() -> None:
     with pytest.raises(ValueError):
         RiskLimits(max_single_loss_fraction=0.0)
+
+
+def test_incremental_quantity_respects_existing_position() -> None:
+    limits = RiskLimits(
+        max_single_loss_fraction=0.02,
+        max_position_fraction=0.15,
+        kelly_variant=KellyVariant.HALF,
+    )
+    entry = 100.0
+    stop = 95.0
+    full = compute_position_quantity(
+        equity=10_000.0,
+        entry_price=entry,
+        stop_price=stop,
+        side="long",
+        p=0.58,
+        b=1.2,
+        limits=limits,
+    )
+    inc = compute_incremental_position_quantity(
+        equity=10_000.0,
+        entry_price=entry,
+        stop_price=stop,
+        side="long",
+        p=0.58,
+        b=1.2,
+        limits=limits,
+        existing_quantity=full.quantity * 0.5,
+        existing_avg_entry=entry,
+    )
+    assert inc.quantity > 0.0
+    assert inc.quantity < full.quantity
+    assert inc.quantity == pytest.approx(full.quantity - full.quantity * 0.5, rel=0.02)
+
+
+def test_risk_engine_evaluate_add() -> None:
+    eng = RiskEngine(RiskLimits(kelly_variant=KellyVariant.HALF))
+    stop = fixed_stop_price("long", 100.0, 0.05)
+    open_ev = eng.evaluate_open(
+        ts=T0,
+        equity=10_000.0,
+        entry_price=100.0,
+        stop_price=stop,
+        side="long",
+        p=0.58,
+        b=1.2,
+    )
+    assert open_ev.allow
+    existing = open_ev.quantity * 0.4
+    add_ev = eng.evaluate_add(
+        ts=T0 + 1,
+        equity=10_500.0,
+        entry_price=105.0,
+        stop_price=fixed_stop_price("long", 105.0, 0.05),
+        side="long",
+        p=0.58,
+        b=1.2,
+        existing_quantity=existing,
+        existing_avg_entry=100.0,
+    )
+    assert add_ev.allow
+    assert add_ev.incremental_quantity > 0.0
+    assert add_ev.total_quantity_after == pytest.approx(existing + add_ev.incremental_quantity)
+    assert add_ev.implied_loss_at_stop_fraction_of_equity <= eng.limits.max_single_loss_fraction + 1e-9
+
+
+def test_risk_engine_evaluate_add_max_count_style_zero_increment() -> None:
+    eng = RiskEngine(
+        RiskLimits(
+            max_single_loss_fraction=0.02,
+            max_position_fraction=0.15,
+            kelly_variant=KellyVariant.HALF,
+        )
+    )
+    stop = fixed_stop_price("long", 100.0, 0.05)
+    full = compute_position_quantity(
+        equity=10_000.0,
+        entry_price=100.0,
+        stop_price=stop,
+        side="long",
+        p=0.58,
+        b=1.2,
+        limits=eng.limits,
+    )
+    add_ev = eng.evaluate_add(
+        ts=T0,
+        equity=10_000.0,
+        entry_price=100.0,
+        stop_price=stop,
+        side="long",
+        p=0.58,
+        b=1.2,
+        existing_quantity=full.quantity,
+        existing_avg_entry=100.0,
+    )
+    assert not add_ev.allow
+    assert "incremental_quantity_zero" in add_ev.reasons
 
 
 def test_risk_engine_defaults_evaluate_open() -> None:

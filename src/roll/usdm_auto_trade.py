@@ -20,11 +20,18 @@ from roll.logger import get_logger
 from roll.market_data import parse_candidate_assets
 from roll.offline_trend import evaluate_symbol_offline_public
 from roll.position_manager import PositionManager, TradeLockState, reconcile_usdm_account
+from roll.position_roll import (
+    has_float_profit,
+    merge_roll_live_state,
+    parse_add_count,
+    trend_allows_add,
+)
 from roll.risk import (
     RiskEngine,
     RiskLimits,
     Side,
     fixed_stop_price as _fixed_stop_price,
+    notional_usdt,
     trailing_stop_price,
 )
 from roll.state_store import RuntimeState, StateStore
@@ -240,6 +247,24 @@ def _net_position_any(rows: list[dict[str, Any]], symbol: str) -> tuple[float | 
     return None, None
 
 
+def _position_entry_avg(rows: list[dict[str, Any]], symbol: str) -> float | None:
+    """从 positionRisk 读取交易所持仓均价（entryPrice）。"""
+    want = symbol.upper()
+    for row in rows:
+        if str(row.get("symbol", "")).upper() != want:
+            continue
+        ep = row.get("entryPrice")
+        if ep is None:
+            continue
+        try:
+            px = float(ep)
+        except (TypeError, ValueError):
+            continue
+        if px > 0.0:
+            return px
+    return None
+
+
 def infer_hold_side(am: float | None, hedge_h: str | None) -> Side | None:
     if am is None or hedge_h == "HEDGE":
         return None
@@ -413,7 +438,15 @@ def _execute_open_flow(
         entry_ref = float(mark)
         ext = entry_ref if side_pick == "long" else entry_ref
         ext = max(ext, mark) if side_pick == "long" else min(ext, mark)
-        live_leaf.update({"entry_reference": entry_ref, "extreme": ext, "side": side_pick, "qty": qty_s})
+        live_leaf.update(
+            {
+                "entry_reference": entry_ref,
+                "extreme": ext,
+                "side": side_pick,
+                "qty": qty_s,
+                "add_count": 0,
+            }
+        )
         _ext2, stops = ensure_or_roll_protective_stop(
             client=signed_client,
             symbol=symbol,
@@ -429,6 +462,183 @@ def _execute_open_flow(
     except Exception:
         pm.rollback_enter_to_idle()
         raise
+
+
+def _execute_add_flow(
+    *,
+    signed_client: BinanceCoinMSignedClient,
+    symbol: str,
+    spec: UsdMFuturesSymbol,
+    hold_side: Side,
+    qty_add: float,
+    mark: float,
+    emit: LoggerFn,
+    live_leaf: dict[str, Any],
+    trail_frac: float | None,
+    adverse_frac: float,
+) -> None:
+    """持仓中 MARKET 加仓（不经过 ENTERING 状态机）。"""
+    qty_s = format_market_quantity_str(spec, qty_add)
+    emit(f"[live] MARKET_ADD symbol={symbol} side={hold_side} qty={qty_s} mark≈{mark:.8g}")
+    ot = signed_client.new_market_order(
+        symbol=symbol,
+        side=("BUY" if hold_side == "long" else "SELL"),
+        quantity=qty_s,
+        reduce_only=False,
+    )
+    emit(f"[live] add_order orderId={ot.get('orderId')} status={ot.get('status')}")
+    pr = signed_client.position_risk(symbol=symbol)
+    am, hh = _net_position_any(pr, symbol)
+    hs = infer_hold_side(am, hh)
+    if hs != hold_side:
+        raise RuntimeError(f"加仓后持仓方向异常 inferred={hs!r} amt={am!r}")
+    entry_ex = _position_entry_avg(pr, symbol)
+    entry_ref = float(entry_ex) if entry_ex is not None else float(mark)
+    qty_f = abs(float(am)) if am is not None else float(qty_s)
+    ex0 = live_leaf.get("extreme") if isinstance(live_leaf.get("extreme"), (int, float)) else entry_ref
+    ex = float(ex0)
+    ex = max(ex, mark) if hold_side == "long" else min(ex, mark)
+    add_n = parse_add_count(live_leaf) + 1
+    live_leaf.update(
+        merge_roll_live_state(
+            live_leaf,
+            add_count=add_n,
+            entry_reference=entry_ref,
+            extreme=ex,
+            total_qty=qty_f,
+        )
+    )
+    live_leaf["side"] = hold_side
+    _ext2, stops = ensure_or_roll_protective_stop(
+        client=signed_client,
+        symbol=symbol,
+        spec=spec,
+        hold_side=hold_side,
+        entry_ref=entry_ref,
+        extreme_px=ex,
+        adverse_frac=adverse_frac,
+        trail_frac=trail_frac,
+        emit=emit,
+    )
+    live_leaf.update({"stop_live": stops, "symbol": symbol.upper(), "mark_px": mark})
+
+
+def _try_position_roll_add(
+    *,
+    signed_client: BinanceCoinMSignedClient,
+    symbol: str,
+    spec: UsdMFuturesSymbol,
+    hold: Side,
+    amt: float | None,
+    mark: float,
+    sig: TrendSignal,
+    tparams: TrendModelParams,
+    pcfg: StrategyLoopParams,
+    rk: RiskEngine,
+    limits: RiskLimits,
+    account: Mapping[str, Any],
+    live_leaf: dict[str, Any],
+    trail_frac: float | None,
+    emit: LoggerFn,
+) -> None:
+    """浮盈滚仓：趋势仍强 + 浮盈 + 次数未满 → 风控增量 sizing → MARKET 加仓。"""
+    add_count = parse_add_count(live_leaf)
+    if add_count >= pcfg.max_add_per_round:
+        emit(
+            f"[live][roll_skip] add_count={add_count} >= max_add_per_round={pcfg.max_add_per_round}"
+        )
+        return
+
+    er = live_leaf.get("entry_reference")
+    entry_ref = float(er) if isinstance(er, (int, float)) else float(mark)
+    qty_existing = abs(float(amt)) if amt is not None else 0.0
+    if qty_existing <= 0.0:
+        emit("[live][roll_skip] no_position_qty")
+        return
+
+    if not has_float_profit(
+        side=hold,
+        quantity=qty_existing,
+        avg_entry=entry_ref,
+        mark=mark,
+        min_return_fraction=pcfg.min_unrealized_profit_fraction,
+    ):
+        emit("[live][roll_skip] no_unrealized_profit")
+        return
+
+    if not trend_allows_add(holding=hold, sig=sig, tparams=tparams):
+        emit(
+            f"[live][roll_skip] trend_not_strong signal={sig.side.value} score={sig.score:+.4f}"
+        )
+        return
+
+    stop_px = _fixed_stop_price(hold, mark, pcfg.stop_adverse_fraction)
+    equity_lv = estimate_usdt_equity_for_risk(account=account)
+    avail_margin = estimate_available_margin_usdt(account=account)
+    step_sz = _float_step(spec.market_step_size or spec.step_size)
+    min_raw = spec.market_min_qty or spec.min_qty
+    try:
+        min_q_v = float(min_raw) if min_raw else 0.0
+    except (TypeError, ValueError):
+        min_q_v = 0.0
+    cm = usdm_linear_contract_multiplier(spec)
+    min_ntl = parse_min_notional_usdt(spec)
+
+    ae = rk.evaluate_add(
+        ts=time.time(),
+        equity=equity_lv,
+        entry_price=mark,
+        stop_price=stop_px,
+        side=hold,
+        p=pcfg.kelly_p,
+        b=pcfg.kelly_b,
+        existing_quantity=qty_existing,
+        existing_avg_entry=entry_ref,
+        quantity_step=step_sz,
+        min_quantity=min_q_v,
+        contract_multiplier=cm,
+        min_notional_usdt=min_ntl,
+        available_margin_usdt=avail_margin,
+        initial_leverage=pcfg.initial_leverage,
+    )
+    if not ae.allow:
+        emit(f"[live][roll_reject] {'; '.join(ae.reasons)}")
+        return
+
+    existing_ntl = notional_usdt(qty_existing, mark) * cm
+    pre = precheck_usdm_market_open(
+        spec=spec,
+        quantity_raw=float(ae.incremental_quantity),
+        entry_price=mark,
+        equity_usdt=equity_lv,
+        available_margin_usdt=avail_margin,
+        limits_max_position_fraction=limits.max_position_fraction,
+        limits_max_single_loss_fraction=limits.max_single_loss_fraction,
+        implied_loss_at_stop_fraction=ae.implied_loss_at_stop_fraction_of_equity,
+        initial_leverage=pcfg.initial_leverage,
+        existing_position_notional_usdt=existing_ntl,
+    )
+    if not pre.ok:
+        emit(f"[live][roll_reject] precheck: {'; '.join(pre.reasons)}")
+        return
+
+    emit(
+        f"[live][roll_pass] add #{add_count + 1} inc_qty={pre.quantity:.8g} "
+        f"total≈{ae.total_quantity_after:.8g} avg_entry≈{ae.avg_entry_after:.8g} "
+        f"equity≈{equity_lv:.4f} implied_loss_frac≈{ae.implied_loss_at_stop_fraction_of_equity:.4f}"
+    )
+    _execute_add_flow(
+        signed_client=signed_client,
+        symbol=symbol,
+        spec=spec,
+        hold_side=hold,
+        qty_add=pre.quantity,
+        mark=mark,
+        emit=emit,
+        live_leaf=live_leaf,
+        trail_frac=trail_frac,
+        adverse_frac=float(pcfg.stop_adverse_fraction),
+    )
 
 
 def run_live_strategy_iteration(
@@ -548,8 +758,14 @@ def run_live_strategy_iteration(
                 clear_live_snap = True
 
             else:
-                er = live_leaf.get("entry_reference") if isinstance(live_leaf.get("entry_reference"), (int, float)) else mrk
-                entry_ref_f = float(er)
+                entry_ex = _position_entry_avg(prrows, sym)
+                er = live_leaf.get("entry_reference")
+                if entry_ex is not None:
+                    entry_ref_f = float(entry_ex)
+                elif isinstance(er, (int, float)):
+                    entry_ref_f = float(er)
+                else:
+                    entry_ref_f = float(mrk)
                 ex0 = (
                     live_leaf.get("extreme")
                     if isinstance(live_leaf.get("extreme"), (int, float))
@@ -557,6 +773,38 @@ def run_live_strategy_iteration(
                 )
                 ex = float(ex0)
                 ex = max(ex, mrk) if hold == "long" else min(ex, mrk)
+                live_leaf = merge_roll_live_state(
+                    live_leaf,
+                    entry_reference=entry_ref_f,
+                    extreme=ex,
+                    total_qty=abs(float(amt)) if amt is not None else None,
+                )
+                live_leaf.setdefault("add_count", parse_add_count(live_leaf))
+                live_leaf["side"] = hold
+
+                limits = RiskLimits()
+                rk = RiskEngine(limits)
+                account = signed_client.account()
+                _try_position_roll_add(
+                    signed_client=signed_client,
+                    symbol=sym,
+                    spec=spec,
+                    hold=hold,
+                    amt=amt,
+                    mark=mrk,
+                    sig=sig,
+                    tparams=tpar,
+                    pcfg=pcfg,
+                    rk=rk,
+                    limits=limits,
+                    account=account,
+                    live_leaf=live_leaf,
+                    trail_frac=trail_frac,
+                    emit=out,
+                )
+
+                entry_ref_f = float(live_leaf.get("entry_reference", entry_ref_f))
+                ex = float(live_leaf.get("extreme", ex))
                 _, stp = ensure_or_roll_protective_stop(
                     client=signed_client,
                     symbol=sym,

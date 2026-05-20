@@ -9,6 +9,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from roll.binance_client import BinanceUsdmClient, UsdMFuturesSymbol
 from roll.coinm_auto_trade import desired_protective_stop_price, should_exit_from_trend
+from roll.position_roll import has_float_profit, trend_allows_add
 from roll.risk import (
     KellyVariant,
     RiskEngine,
@@ -406,6 +407,7 @@ def run_backtest(
     cm: float = USDM_LINEAR_CONTRACT_MULTIPLIER
     entry_ref: float = 0.0
     extreme: float = 0.0
+    add_count: int = 0
     cooldown_until_i: int = -1
 
     def total_equity(mid_px: float | None) -> float:
@@ -421,7 +423,7 @@ def run_backtest(
         ts_sec: float,
         reason: str,
     ) -> None:
-        nonlocal cash, pos_sym, pos_side, qty, cm, entry_ref, extreme
+        nonlocal cash, pos_sym, pos_side, qty, cm, entry_ref, extreme, add_count
         ex = _apply_slippage_exit(side_p, px_exit_raw, cfg.slippage_bps)
         g = _pnl_quote(side_p, entry_ref, ex, qty, cm)
         fee_close = abs(qty) * ex * cfg.fee_rate
@@ -450,6 +452,7 @@ def run_backtest(
         cm = USDM_LINEAR_CONTRACT_MULTIPLIER
         entry_ref = 0.0
         extreme = 0.0
+        add_count = 0
 
     entry_ts = 0.0
     min_need = int(trend_params.min_bars_soft) + 50
@@ -523,6 +526,68 @@ def run_backtest(
                     if should_exit_from_trend(holding=side_p, sig=sig, tparams=trend_params):
                         close_position(sym, side_p, px_close, ts_sec, "trend_exit")
                         cooldown_until_i = i + cfg.cooldown_bars_after_exit
+                    elif (
+                        add_count < strat_params.max_add_per_round
+                        and has_float_profit(
+                            side=side_p,
+                            quantity=qty,
+                            avg_entry=entry_ref,
+                            mark=px_close,
+                            min_return_fraction=strat_params.min_unrealized_profit_fraction,
+                        )
+                        and trend_allows_add(holding=side_p, sig=sig, tparams=trend_params)
+                    ):
+                        stop_add = fixed_stop_price(
+                            side_p, px_close, strat_params.stop_adverse_fraction
+                        )
+                        sp_add = specs_map.get(sym.upper())
+                        if sp_add is not None:
+                            step_sz = _float_step(sp_add.market_step_size or sp_add.step_size)
+                            try:
+                                min_q = (
+                                    float(sp_add.market_min_qty or sp_add.min_qty)
+                                    if (sp_add.market_min_qty or sp_add.min_qty)
+                                    else 0.0
+                                )
+                            except (TypeError, ValueError):
+                                min_q = 0.0
+                            cm_u = usdm_linear_contract_multiplier(sp_add)
+                            min_ntl = parse_min_notional_usdt(sp_add)
+                            equity_add = total_equity(px_close)
+                            ae = engine.evaluate_add(
+                                ts=ts_sec,
+                                equity=equity_add,
+                                entry_price=px_close,
+                                stop_price=stop_add,
+                                side=side_p,
+                                p=strat_params.kelly_p,
+                                b=strat_params.kelly_b,
+                                existing_quantity=qty,
+                                existing_avg_entry=entry_ref,
+                                quantity_step=step_sz,
+                                min_quantity=min_q,
+                                contract_multiplier=cm_u,
+                                min_notional_usdt=min_ntl,
+                                initial_leverage=strat_params.initial_leverage,
+                            )
+                            if ae.allow and ae.incremental_quantity > 0.0:
+                                inc = float(ae.incremental_quantity)
+                                add_px = _apply_slippage_entry(side_p, px_close, cfg.slippage_bps)
+                                fee_add = abs(inc) * add_px * cfg.fee_rate
+                                cash -= fee_add
+                                prev_q = qty
+                                qty += inc
+                                entry_ref = (
+                                    (prev_q * entry_ref + inc * add_px) / qty
+                                    if prev_q > 0.0
+                                    else add_px
+                                )
+                                add_count += 1
+                                extreme = hi if side_p == "long" else lo
+                                out_log(
+                                    f"[bt add] i={i} sym={sym} side={side_p} add#{add_count} "
+                                    f"inc_qty={inc:.8g} avg_entry={entry_ref:.8g} equity≈{equity_add:.4f}"
+                                )
             continue
 
         # flat — optional cooldown
@@ -595,6 +660,7 @@ def run_backtest(
                 cm = cm_u
                 entry_ref = entry_eff
                 extreme = ohi if sk == "long" else olo
+                add_count = 0
                 entry_ts = ts_sec
                 out_log(
                     f"[bt open] i={i} sym={sym_r} side={sk} qty={q:.8g} entry={entry_eff:.8g} "
@@ -653,6 +719,8 @@ def run_backtest(
             "min_adx": trend_params.min_adx,
             "max_position_fraction": lim.max_position_fraction,
             "kelly_extra_multiplier": lim.kelly_extra_multiplier,
+            "max_add_per_round": strat_params.max_add_per_round,
+            "min_unrealized_profit_fraction": strat_params.min_unrealized_profit_fraction,
             "fee_rate": cfg.fee_rate,
             "slippage_bps": cfg.slippage_bps,
         },

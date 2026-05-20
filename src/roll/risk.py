@@ -275,6 +275,82 @@ def compute_position_quantity(
     )
 
 
+def compute_incremental_position_quantity(
+    *,
+    equity: float,
+    entry_price: float,
+    stop_price: float,
+    side: Side,
+    p: float,
+    b: float,
+    limits: RiskLimits,
+    existing_quantity: float,
+    existing_avg_entry: float,
+    contract_multiplier: float = USDM_LINEAR_CONTRACT_MULTIPLIER,
+    quantity_step: float = 0.0,
+    min_quantity: float = 0.0,
+) -> PositionSizeResult:
+    """
+    在已有仓位上追加数量：先按当前权益计算「满仓」目标，再减去已有数量得到增量。
+    合并后止损亏损按加权均价与保护止损价估算。
+    """
+    if equity <= 0.0 or entry_price <= 0.0:
+        raise ValueError("equity、entry_price 必须为正")
+    existing_q = max(float(existing_quantity), 0.0)
+    existing_avg = float(existing_avg_entry) if existing_avg_entry > 0.0 else entry_price
+
+    full = compute_position_quantity(
+        equity=equity,
+        entry_price=entry_price,
+        stop_price=stop_price,
+        side=side,
+        p=p,
+        b=b,
+        limits=limits,
+        contract_multiplier=contract_multiplier,
+        quantity_step=0.0,
+        min_quantity=0.0,
+    )
+    delta_raw = full.quantity - existing_q
+    if quantity_step > 0.0:
+        delta_raw = floor_to_step(delta_raw, quantity_step)
+    if delta_raw < min_quantity:
+        delta_raw = 0.0
+
+    if delta_raw <= 0.0:
+        return PositionSizeResult(
+            quantity=0.0,
+            effective_kelly_fraction=full.effective_kelly_fraction,
+            qty_from_kelly_notional=full.qty_from_kelly_notional,
+            qty_from_loss_cap=full.qty_from_loss_cap,
+            qty_from_max_position=full.qty_from_max_position,
+            notional=existing_q * entry_price * contract_multiplier,
+            implied_loss_at_stop_fraction_of_equity=0.0,
+        )
+
+    total_q = existing_q + delta_raw
+    avg_e = (
+        (existing_q * existing_avg + delta_raw * entry_price) / total_q
+        if existing_q > 0.0
+        else entry_price
+    )
+    adv = adverse_price_distance(avg_e, stop_price, side)
+    loss_per_unit = adv * contract_multiplier
+    implied_loss = total_q * loss_per_unit
+    implied_frac = implied_loss / equity if equity > 0.0 else 0.0
+    notional = total_q * entry_price * contract_multiplier
+
+    return PositionSizeResult(
+        quantity=delta_raw,
+        effective_kelly_fraction=full.effective_kelly_fraction,
+        qty_from_kelly_notional=full.qty_from_kelly_notional,
+        qty_from_loss_cap=full.qty_from_loss_cap,
+        qty_from_max_position=full.qty_from_max_position,
+        notional=notional,
+        implied_loss_at_stop_fraction_of_equity=implied_frac,
+    )
+
+
 @dataclass
 class AccountRiskState:
     """账户熔断用可变状态（回测/仿真时逐步喂 equity 与平仓盈亏）。"""
@@ -390,6 +466,21 @@ class OpenEvaluation:
     effective_kelly_fraction: float
     position: PositionSizeResult | None
     raw_kelly_fraction: float
+
+
+@dataclass(frozen=True)
+class AddEvaluation:
+    """浮盈加仓评估：增量数量及合并持仓后的风险指标。"""
+
+    allow: bool
+    reasons: tuple[str, ...]
+    incremental_quantity: float
+    total_quantity_after: float
+    avg_entry_after: float
+    effective_kelly_fraction: float
+    position: PositionSizeResult | None
+    raw_kelly_fraction: float
+    implied_loss_at_stop_fraction_of_equity: float
 
 
 class RiskEngine:
@@ -513,5 +604,119 @@ class RiskEngine:
             effective_kelly_fraction=eff,
             position=pos if pos and allow else None,
             raw_kelly_fraction=raw_k,
+        )
+
+    def evaluate_add(
+        self,
+        *,
+        ts: float,
+        equity: float,
+        entry_price: float,
+        stop_price: float,
+        side: Side,
+        p: float,
+        b: float,
+        existing_quantity: float,
+        existing_avg_entry: float,
+        quantity_step: float = 0.0,
+        min_quantity: float = 0.0,
+        contract_multiplier: float = USDM_LINEAR_CONTRACT_MULTIPLIER,
+        min_notional_usdt: float = 0.0,
+        available_margin_usdt: float | None = None,
+        initial_leverage: int = 1,
+    ) -> AddEvaluation:
+        """浮盈加仓增量 sizing：Kelly 门槛 + 合并持仓后的单笔亏损 / 最大仓位约束。"""
+        reasons: list[str] = []
+        existing_q = max(float(existing_quantity), 0.0)
+        if existing_q <= 0.0:
+            reasons.append("no_existing_position")
+
+        raw_k = kelly_fraction(p, b)
+        if raw_k <= 0.0:
+            reasons.append("kelly_non_positive")
+
+        self._monitor.update_equity(ts, equity)
+        self._monitor.clear_cooldown_if_expired(ts)
+
+        pos: PositionSizeResult | None = None
+        inc_qty = 0.0
+        avg_after = float(existing_avg_entry) if existing_avg_entry > 0.0 else entry_price
+        implied_frac = 0.0
+
+        if not reasons:
+            try:
+                pos = compute_incremental_position_quantity(
+                    equity=equity,
+                    entry_price=entry_price,
+                    stop_price=stop_price,
+                    side=side,
+                    p=p,
+                    b=b,
+                    limits=self._limits,
+                    existing_quantity=existing_q,
+                    existing_avg_entry=avg_after,
+                    contract_multiplier=contract_multiplier,
+                    quantity_step=quantity_step,
+                    min_quantity=min_quantity,
+                )
+                inc_qty = pos.quantity
+                if inc_qty <= 0.0:
+                    reasons.append("incremental_quantity_zero")
+                else:
+                    total_q = existing_q + inc_qty
+                    avg_after = (
+                        (existing_q * avg_after + inc_qty * entry_price) / total_q
+                        if existing_q > 0.0
+                        else entry_price
+                    )
+                    implied_frac = pos.implied_loss_at_stop_fraction_of_equity
+                    if implied_frac > self._limits.max_single_loss_fraction + 1e-9:
+                        reasons.append("combined_implied_loss_exceeds_cap")
+                        inc_qty = 0.0
+                        pos = None
+                    else:
+                        inc_ntl = notional_usdt(inc_qty, entry_price) * contract_multiplier
+                        if min_notional_usdt > 0.0 and inc_ntl + 1e-9 < min_notional_usdt:
+                            reasons.append(
+                                f"below_min_notional:{inc_ntl:.8g}<{min_notional_usdt:.8g}"
+                            )
+                            inc_qty = 0.0
+                            pos = None
+                        elif available_margin_usdt is not None:
+                            lev = max(int(initial_leverage), 1)
+                            need_margin = inc_ntl / lev
+                            if available_margin_usdt <= 0.0:
+                                reasons.append("available_margin_non_positive")
+                                inc_qty = 0.0
+                                pos = None
+                            elif need_margin > available_margin_usdt + 1e-6:
+                                reasons.append(
+                                    f"insufficient_available_margin:need≈{need_margin:.4f}"
+                                    f">avail={available_margin_usdt:.4f}"
+                                )
+                                inc_qty = 0.0
+                                pos = None
+            except ValueError as e:
+                reasons.append(f"sizing_error:{e}")
+
+        eff = effective_position_fraction(
+            p,
+            b,
+            self._limits.kelly_variant,
+            self._limits.max_position_fraction,
+            kelly_extra_multiplier=self._limits.kelly_extra_multiplier,
+        )
+        allow = len(reasons) == 0 and inc_qty > 0.0
+        total_after = existing_q + inc_qty if allow else existing_q
+        return AddEvaluation(
+            allow=allow,
+            reasons=tuple(dict.fromkeys(reasons)),
+            incremental_quantity=inc_qty if allow else 0.0,
+            total_quantity_after=total_after,
+            avg_entry_after=avg_after,
+            effective_kelly_fraction=eff,
+            position=pos if pos and allow else None,
+            raw_kelly_fraction=raw_k,
+            implied_loss_at_stop_fraction_of_equity=implied_frac if allow else 0.0,
         )
 

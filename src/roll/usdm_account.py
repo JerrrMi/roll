@@ -190,6 +190,7 @@ def precheck_usdm_market_open(
     limits_max_single_loss_fraction: float,
     implied_loss_at_stop_fraction: float,
     initial_leverage: int,
+    existing_position_notional_usdt: float = 0.0,
 ) -> UsdmOrderPrecheck:
     """
     下单前校验：MARKET_LOT_SIZE、MIN_NOTIONAL、最大仓位/单笔风险、可用保证金。
@@ -239,12 +240,13 @@ def precheck_usdm_market_open(
             reasons.append("quantity_not_on_market_step")
 
     ntl = notional_usdt(qty, entry_price)
+    total_ntl = max(float(existing_position_notional_usdt), 0.0) + ntl
     min_ntl = parse_min_notional_usdt(spec)
     if min_ntl > 0.0 and ntl + 1e-9 < min_ntl:
         reasons.append(f"below_min_notional:{ntl:.8g}<{min_ntl:.8g}")
 
     if equity_usdt > 0.0:
-        pos_frac = ntl / equity_usdt
+        pos_frac = total_ntl / equity_usdt
         if pos_frac > limits_max_position_fraction + 1e-9:
             reasons.append(
                 f"exceeds_max_position_fraction:{pos_frac:.6f}>{limits_max_position_fraction:.6f}"
