@@ -4,7 +4,7 @@ Plan 3.0 §6.4：加仓须趋势仍强、有浮盈、次数上限，且增量数
 """
 from __future__ import annotations
 
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from roll.risk import Side, linear_pnl_usdt
 from roll.trend_model import SignalSide, TrendModelParams, TrendSignal
@@ -68,6 +68,55 @@ def parse_add_count(live_leaf: Mapping[str, Any]) -> int:
     if isinstance(raw, float) and raw == raw:
         return max(int(raw), 0)
     return 0
+
+
+def target_leverage_for_profit(
+    unrealized_return_fraction: float,
+    *,
+    initial_leverage: int = 25,
+    floor_leverage: int = 5,
+) -> int:
+    """Plan §6.3 盈利分层降杠杆：浮盈越高目标杠杆越低（影响后续加仓保证金估算与 set_leverage）。"""
+    initial = max(int(initial_leverage), 1)
+    floor = max(int(floor_leverage), 1)
+    r = float(unrealized_return_fraction)
+    if r >= 0.50:
+        target = 5
+    elif r >= 0.35:
+        target = 10
+    elif r >= 0.20:
+        target = 15
+    elif r >= 0.10:
+        target = 20
+    else:
+        target = initial
+    return max(floor, min(target, initial))
+
+
+def ensure_profit_tier_leverage(
+    *,
+    set_leverage_fn: Callable[[str, int], None],
+    symbol: str,
+    side: Side,
+    avg_entry: float,
+    mark: float,
+    initial_leverage: int,
+    live_leaf: dict[str, Any],
+    emit: Callable[[str], None],
+) -> int:
+    """按未实现收益率调整 symbol 杠杆；仅在目标变化时调用 REST。"""
+    ret = unrealized_return_fraction(side=side, avg_entry=avg_entry, mark=mark)
+    target = target_leverage_for_profit(ret, initial_leverage=initial_leverage)
+    prev = live_leaf.get("effective_leverage")
+    prev_i = int(prev) if isinstance(prev, int) and not isinstance(prev, bool) else None
+    if prev_i != target:
+        set_leverage_fn(symbol, target)
+        live_leaf["effective_leverage"] = target
+        emit(
+            f"[live][deleverage] unrealized_return≈{ret * 100:.2f}% "
+            f"target_leverage={target}x (initial={initial_leverage}x)"
+        )
+    return target
 
 
 def merge_roll_live_state(

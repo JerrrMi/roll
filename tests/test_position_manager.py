@@ -75,6 +75,16 @@ def test_cannot_steal_other_symbol_mid_session() -> None:
         mgr.begin_exit("BBBUSD_PERP")
 
 
+def test_halt_blocks_new_enter_but_allows_exit() -> None:
+    mgr = PositionManager(initial_state=TradeLockState.IN_POSITION, active_symbol="DOGEUSDT")
+    mgr.set_halt_for_manual_review("simulate hedge")
+    with pytest.raises(TransitionError):
+        mgr.begin_enter("DOGEUSDT")
+    mgr.begin_exit("DOGEUSDT")
+    mgr.mark_exit_finished_to_cooldown("DOGEUSDT")
+    assert mgr.lock_state is TradeLockState.COOLDOWN
+
+
 def test_halt_blocks_transitions() -> None:
     mgr = PositionManager()
     mgr.set_halt_for_manual_review("simulate multi-book")

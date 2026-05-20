@@ -63,6 +63,28 @@ def test_should_exit_from_trend_long_to_short() -> None:
     assert should_exit_from_trend(holding="long", sig=sig, tparams=tpar)
 
 
+def test_should_exit_from_trend_weakened_same_side() -> None:
+    tpar = TrendModelParams(long_threshold=0.70, short_threshold=0.70, exit_threshold=0.35)
+    sig = TrendSignal(
+        side=SignalSide.LONG,
+        score=0.30,
+        score_by_interval={},
+        timeframe_assessments=(),
+        reasons=(),
+        rejection_reasons=(),
+    )
+    assert should_exit_from_trend(holding="long", sig=sig, tparams=tpar)
+    sig_still_strong = TrendSignal(
+        side=SignalSide.LONG,
+        score=0.40,
+        score_by_interval={},
+        timeframe_assessments=(),
+        reasons=(),
+        rejection_reasons=(),
+    )
+    assert not should_exit_from_trend(holding="long", sig=sig_still_strong, tparams=tpar)
+
+
 def test_log_peer_signals_skips_active_and_emits() -> None:
     lines: list[str] = []
     client = MagicMock()

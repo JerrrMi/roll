@@ -52,6 +52,20 @@ strategy:
   # min_unrealized_profit_fraction: 0.01
   # 可选：追踪 STOP（仍需满足初始底价 stop_adverse_fraction）；自动交易时需与 binance.rest_base 同源行情
   # trail_stop_fraction: 0.02
+
+# 账户级风控（live / 回测共用；未配置时使用 risk.py 默认值）
+risk:
+  max_single_loss_fraction: 0.02
+  max_position_fraction: 0.15
+  max_drawdown_fraction: 0.15
+  max_daily_loss_fraction: 0.05
+  max_consecutive_losses: 3
+  cooldown_seconds: 3600
+  kelly_variant: HALF
+
+# 趋势退出：同向 score 低于 exit_threshold 时平仓（弱于开仓 long/short_threshold）
+trend_model:
+  exit_threshold: 0.35
   # Live 模式下 public_rest_base 必须与 binance.rest_base 完全一致；dry-run-only 可看实盘公共行情：
   # public_rest_base: "https://fapi.binance.com"
 

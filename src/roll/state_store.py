@@ -21,6 +21,7 @@ class RuntimeState:
     pause_new_positions: bool = False
     pause_new_positions_reason: str | None = None
     cooldown_until_unix_ms: int | None = None
+    account_risk: dict[str, Any] = field(default_factory=dict)
     last_signal: dict[str, Any] = field(default_factory=dict)
 
 
@@ -83,6 +84,9 @@ def _runtime_from_mapping(m: Mapping[str, Any]) -> RuntimeState:
     cdu = m.get("cooldown_until_unix_ms")
     cd: int | None = int(cdu) if isinstance(cdu, int) else None
 
+    ar_raw = m.get("account_risk")
+    account_risk: dict[str, Any] = dict(ar_raw) if isinstance(ar_raw, dict) else {}
+
     sig = m.get("last_signal")
     last_sig: dict[str, Any] = sig if isinstance(sig, dict) else {}
 
@@ -94,5 +98,6 @@ def _runtime_from_mapping(m: Mapping[str, Any]) -> RuntimeState:
         pause_new_positions=pn,
         pause_new_positions_reason=pnr,
         cooldown_until_unix_ms=cd,
+        account_risk=account_risk,
         last_signal=dict(last_sig),
     )

@@ -9,6 +9,8 @@ from roll.risk import (
     KellyVariant,
     RiskEngine,
     RiskLimits,
+    account_risk_state_from_mapping,
+    account_risk_state_to_mapping,
     adverse_fraction_from_prices,
     atr_stop_price,
     compute_incremental_position_quantity,
@@ -363,6 +365,43 @@ def test_risk_engine_evaluate_add_max_count_style_zero_increment() -> None:
     )
     assert not add_ev.allow
     assert "incremental_quantity_zero" in add_ev.reasons
+
+
+def test_risk_engine_evaluate_add_blocks_on_circuit() -> None:
+    limits = RiskLimits(
+        max_drawdown_fraction=0.10,
+        max_daily_loss_fraction=0.99,
+        kelly_variant=KellyVariant.HALF,
+    )
+    eng = RiskEngine(limits)
+    eng.monitor.update_equity(T0, 100.0)
+    eng.monitor.update_equity(T0 + 1, 89.0)
+    stop = fixed_stop_price("long", 100.0, 0.05)
+    add_ev = eng.evaluate_add(
+        ts=T0 + 2,
+        equity=89.0,
+        entry_price=100.0,
+        stop_price=stop,
+        side="long",
+        p=0.58,
+        b=1.2,
+        existing_quantity=1.0,
+        existing_avg_entry=95.0,
+    )
+    assert not add_ev.allow
+    assert any("trading_halted:max_drawdown" in r for r in add_ev.reasons)
+
+
+def test_account_risk_state_roundtrip() -> None:
+    st = AccountRiskMonitor(RiskLimits()).state
+    st.peak_equity = 1234.5
+    st.halted_max_drawdown = True
+    st.consecutive_losses = 2
+    raw = account_risk_state_to_mapping(st)
+    restored = account_risk_state_from_mapping(raw)
+    assert restored.peak_equity == pytest.approx(1234.5)
+    assert restored.halted_max_drawdown
+    assert restored.consecutive_losses == 2
 
 
 def test_risk_engine_defaults_evaluate_open() -> None:

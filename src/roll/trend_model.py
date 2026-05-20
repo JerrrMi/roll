@@ -84,6 +84,8 @@ class TrendModelParams:
 
     long_threshold: float = 0.70
     short_threshold: float = 0.70
+    """同向持仓时评分低于该阈值则趋势退出（弱于开仓阈值）。"""
+    exit_threshold: float = 0.35
 
     regression_bars: int = 48
     min_adx: float = 25.0

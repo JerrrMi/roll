@@ -496,11 +496,15 @@ class PositionManager:
         force: bool = False,
     ) -> None:
         with self._rl:
-            if self._halt_automatic_trading and not force:
-                raise TransitionError(f"自动交易已挂起：{self._halt_reason or '参阅 halt_reason'}")
-
             prev_state = self._state
             prev_sym = self._sym
+            if self._halt_automatic_trading and not force:
+                blocked_new = new_state is TradeLockState.ENTERING or (
+                    prev_state is TradeLockState.IDLE and new_state is not TradeLockState.IDLE
+                )
+                if blocked_new:
+                    raise TransitionError(f"自动交易已挂起：{self._halt_reason or '参阅 halt_reason'}")
+
             if validator is not None:
                 validator(prev_state, prev_sym)
 

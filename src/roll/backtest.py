@@ -18,6 +18,7 @@ from roll.risk import (
     USDM_LINEAR_CONTRACT_MULTIPLIER,
     fixed_stop_price,
     linear_pnl_usdt,
+    parse_risk_limits_settings,
 )
 from roll.usdm_account import parse_min_notional_usdt, usdm_linear_contract_multiplier
 from roll.strategy_loop import (
@@ -291,6 +292,7 @@ def parse_trend_model_params(settings: Mapping[str, Any]) -> TrendModelParams:
     for k in (
         "long_threshold",
         "short_threshold",
+        "exit_threshold",
         "min_adx",
         "min_regression_r2",
         "chop_reject_above",
@@ -324,40 +326,6 @@ def parse_trend_model_params(settings: Mapping[str, Any]) -> TrendModelParams:
             patch[k] = int(raw[k])
     if not patch:
         return base
-    return replace(base, **patch)
-
-
-def parse_risk_limits_settings(settings: Mapping[str, Any]) -> RiskLimits | None:
-    raw = settings.get("risk")
-    if not isinstance(raw, dict):
-        return None
-    base = RiskLimits()
-    patch: dict[str, Any] = {}
-    if "max_single_loss_fraction" in raw and isinstance(raw["max_single_loss_fraction"], (int, float)):
-        patch["max_single_loss_fraction"] = float(raw["max_single_loss_fraction"])
-    if "max_position_fraction" in raw and isinstance(raw["max_position_fraction"], (int, float)):
-        patch["max_position_fraction"] = float(raw["max_position_fraction"])
-    if "kelly_extra_multiplier" in raw and isinstance(raw["kelly_extra_multiplier"], (int, float)):
-        patch["kelly_extra_multiplier"] = float(raw["kelly_extra_multiplier"])
-    if "max_drawdown_fraction" in raw and isinstance(raw["max_drawdown_fraction"], (int, float)):
-        patch["max_drawdown_fraction"] = float(raw["max_drawdown_fraction"])
-    if "max_daily_loss_fraction" in raw and isinstance(raw["max_daily_loss_fraction"], (int, float)):
-        patch["max_daily_loss_fraction"] = float(raw["max_daily_loss_fraction"])
-    if "cooldown_seconds" in raw and isinstance(raw["cooldown_seconds"], (int, float)):
-        patch["cooldown_seconds"] = float(raw["cooldown_seconds"])
-    if "max_consecutive_losses" in raw and isinstance(raw["max_consecutive_losses"], int):
-        patch["max_consecutive_losses"] = int(raw["max_consecutive_losses"])
-    kv = raw.get("kelly_variant")
-    if isinstance(kv, str):
-        u = kv.strip().upper()
-        if u == "FULL":
-            patch["kelly_variant"] = KellyVariant.FULL
-        elif u == "HALF":
-            patch["kelly_variant"] = KellyVariant.HALF
-        elif u == "QUARTER":
-            patch["kelly_variant"] = KellyVariant.QUARTER
-    if not patch:
-        return None
     return replace(base, **patch)
 
 
@@ -429,7 +397,9 @@ def run_backtest(
         fee_close = abs(qty) * ex * cfg.fee_rate
         fee_open = abs(qty) * entry_ref * cfg.fee_rate
         fe_total = fee_open + fee_close
+        pnl_net = g - fe_total
         cash += g - fee_close
+        engine.monitor.record_realized_pnl(ts_sec, pnl_net)
         trades.append(
             BacktestTrade(
                 symbol=sym,

@@ -621,6 +621,11 @@ def _cmd_run_loop(project_root: Path, argv: list[str]) -> int:
                     str(snap_pm["pause_new_reason"]) if isinstance(snap_pm.get("pause_new_reason"), str) else None
                 ),
                 cooldown_until_unix_ms=stored_after_reconcile.cooldown_until_unix_ms,
+                account_risk=(
+                    stored_after_reconcile.account_risk
+                    if isinstance(stored_after_reconcile.account_risk, dict)
+                    else {}
+                ),
                 last_signal=stored_after_reconcile.last_signal if isinstance(stored_after_reconcile.last_signal, dict) else {},
             )
         )

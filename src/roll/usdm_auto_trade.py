@@ -21,17 +21,23 @@ from roll.market_data import parse_candidate_assets
 from roll.offline_trend import evaluate_symbol_offline_public
 from roll.position_manager import PositionManager, TradeLockState, reconcile_usdm_account
 from roll.position_roll import (
+    ensure_profit_tier_leverage,
     has_float_profit,
     merge_roll_live_state,
     parse_add_count,
     trend_allows_add,
 )
 from roll.risk import (
+    AccountRiskMonitor,
     RiskEngine,
     RiskLimits,
     Side,
+    account_risk_state_from_mapping,
+    account_risk_state_to_mapping,
     fixed_stop_price as _fixed_stop_price,
+    linear_pnl_usdt,
     notional_usdt,
+    parse_risk_limits_settings,
     trailing_stop_price,
 )
 from roll.state_store import RuntimeState, StateStore
@@ -281,10 +287,66 @@ def stop_order_side_for_protect(*, hold_side: Side) -> str:
 
 def should_exit_from_trend(*, holding: Side, sig: TrendSignal, tparams: TrendModelParams) -> bool:
     if holding == "long":
-        return sig.side is SignalSide.SHORT and (-sig.score) >= tparams.short_threshold
+        if sig.side is SignalSide.SHORT and (-sig.score) >= tparams.short_threshold:
+            return True
+        if sig.side is SignalSide.LONG and sig.score < tparams.exit_threshold:
+            return True
+        return False
     if holding == "short":
-        return sig.side is SignalSide.LONG and sig.score >= tparams.long_threshold
+        if sig.side is SignalSide.LONG and sig.score >= tparams.long_threshold:
+            return True
+        if sig.side is SignalSide.SHORT and (-sig.score) < tparams.exit_threshold:
+            return True
+        return False
     return False
+
+
+def _cooldown_active(cooldown_until_unix_ms: int | None) -> bool:
+    if cooldown_until_unix_ms is None:
+        return False
+    return int(time.time() * 1000) < int(cooldown_until_unix_ms)
+
+
+def _load_live_risk_engine(*, settings: Mapping[str, Any], persisted: RuntimeState) -> tuple[RiskLimits, RiskEngine]:
+    limits = parse_risk_limits_settings(settings) or RiskLimits()
+    monitor_state = account_risk_state_from_mapping(persisted.account_risk)
+    return limits, RiskEngine(limits, monitor=AccountRiskMonitor(limits, monitor_state))
+
+
+def _apply_account_circuit_pause(
+    pm: PositionManager,
+    rk: RiskEngine,
+    *,
+    circ_reasons: Sequence[str],
+    emit: LoggerFn,
+) -> None:
+    st = rk.monitor.state
+    if st.halted_max_drawdown:
+        pm.pause_opening_entries("circuit:max_drawdown")
+        emit("[live][circuit] max_drawdown latched — pause new opens; existing position still managed")
+    elif st.halted_daily_loss:
+        pm.pause_opening_entries("circuit:daily_loss")
+        emit("[live][circuit] daily_loss latched — pause new opens; existing position still managed")
+    for r in circ_reasons:
+        if r.startswith("max_drawdown:") or r.startswith("daily_loss:"):
+            emit(f"[live][circuit] {r}")
+
+
+def _merge_cooldown_until_ms(
+    *,
+    persisted_ms: int | None,
+    monitor_cooldown_ts: float | None,
+    post_exit_ts: float | None,
+    cooldown_seconds: float,
+) -> int | None:
+    candidates: list[int] = []
+    if persisted_ms is not None and _cooldown_active(persisted_ms):
+        candidates.append(int(persisted_ms))
+    if monitor_cooldown_ts is not None and time.time() < monitor_cooldown_ts:
+        candidates.append(int(monitor_cooldown_ts * 1000))
+    if post_exit_ts is not None:
+        candidates.append(int((post_exit_ts + cooldown_seconds) * 1000))
+    return max(candidates) if candidates else None
 
 
 def merge_live_leaf(
@@ -310,10 +372,14 @@ def persist_autotrade_runtime(
     pm: PositionManager,
     live_leaf: Mapping[str, Any],
     clear_live: bool = False,
+    rk: RiskEngine | None = None,
+    cooldown_until_unix_ms: int | None = None,
 ) -> None:
     snap = pm.snapshot_dict()
     prev = store.load()
     merged = merge_live_leaf(prev.last_signal if isinstance(prev.last_signal, dict) else {}, live_leaf, clear_live=clear_live)
+    account_risk = account_risk_state_to_mapping(rk.monitor.state) if rk is not None else prev.account_risk
+    cd_out = cooldown_until_unix_ms if cooldown_until_unix_ms is not None else prev.cooldown_until_unix_ms
     store.save(
         RuntimeState(
             trade_lock_state=str(snap["trade_lock_state"]),
@@ -328,7 +394,8 @@ def persist_autotrade_runtime(
             pause_new_positions_reason=(
                 str(snap["pause_new_reason"]) if isinstance(snap.get("pause_new_reason"), str) else None
             ),
-            cooldown_until_unix_ms=prev.cooldown_until_unix_ms,
+            cooldown_until_unix_ms=cd_out,
+            account_risk=account_risk,
             last_signal=merged,
         ),
     )
@@ -539,6 +606,7 @@ def _try_position_roll_add(
     account: Mapping[str, Any],
     live_leaf: dict[str, Any],
     trail_frac: float | None,
+    effective_leverage: int,
     emit: LoggerFn,
 ) -> None:
     """浮盈滚仓：趋势仍强 + 浮盈 + 次数未满 → 风控增量 sizing → MARKET 加仓。"""
@@ -599,7 +667,7 @@ def _try_position_roll_add(
         contract_multiplier=cm,
         min_notional_usdt=min_ntl,
         available_margin_usdt=avail_margin,
-        initial_leverage=pcfg.initial_leverage,
+        initial_leverage=max(int(effective_leverage), 1),
     )
     if not ae.allow:
         emit(f"[live][roll_reject] {'; '.join(ae.reasons)}")
@@ -615,7 +683,7 @@ def _try_position_roll_add(
         limits_max_position_fraction=limits.max_position_fraction,
         limits_max_single_loss_fraction=limits.max_single_loss_fraction,
         implied_loss_at_stop_fraction=ae.implied_loss_at_stop_fraction_of_equity,
-        initial_leverage=pcfg.initial_leverage,
+        initial_leverage=max(int(effective_leverage), 1),
         existing_position_notional_usdt=existing_ntl,
     )
     if not pre.ok:
@@ -683,6 +751,9 @@ def run_live_strategy_iteration(
 
     live_leaf: dict[str, Any] = {}
     clear_live_snap = False
+    cooldown_until_ms: int | None = None
+    limits, rk = RiskLimits(), RiskEngine(RiskLimits())
+    post_exit_ts: float | None = None
 
     try:
         if clear_entry_pause:
@@ -695,14 +766,30 @@ def run_live_strategy_iteration(
         pl = persisted.last_signal.get("live") if isinstance(persisted.last_signal, dict) else {}
         live_leaf.update(pl if isinstance(pl, dict) else {})
 
+        limits, rk = _load_live_risk_engine(settings=settings, persisted=persisted)
+        cooldown_until_ms = persisted.cooldown_until_unix_ms
+
+        ts_now = time.time()
+        account = signed_client.account()
+        equity_now = estimate_usdt_equity_for_risk(account=account)
+        circ = rk.monitor.update_equity(ts_now, equity_now)
+        rk.monitor.clear_cooldown_if_expired(ts_now)
+        _apply_account_circuit_pause(position_manager, rk, circ_reasons=circ.block_reasons, emit=out)
+        cooldown_until_ms = _merge_cooldown_until_ms(
+            persisted_ms=cooldown_until_ms,
+            monitor_cooldown_ts=rk.monitor.state.cooldown_until_ts,
+            post_exit_ts=None,
+            cooldown_seconds=limits.cooldown_seconds,
+        )
+
         if position_manager.halt_automatic_trading:
             out(f"[live][halted] reason={position_manager.halt_reason!r}")
 
-        elif position_manager.lock_state is TradeLockState.ENTERING and position_manager.active_symbol:
+        if position_manager.lock_state is TradeLockState.ENTERING and position_manager.active_symbol:
             symx = position_manager.active_symbol.upper()
             out(f"[live] ENTERING 占用 {symx} —— 等待未完成入场委托；本轮不新开仓")
 
-        elif position_manager.lock_state is TradeLockState.IN_POSITION and position_manager.active_symbol:
+        if position_manager.lock_state is TradeLockState.IN_POSITION and position_manager.active_symbol:
             sym = position_manager.active_symbol.upper()
             spec = signed_client.get_usdm_spec(sym)
             if spec is None:
@@ -740,17 +827,44 @@ def run_live_strategy_iteration(
                 out(f"[live][signal_only] peer_scan_skipped: {pool_exc}")
 
             if hold is None:
-                out("[live.warn] 持仓腿无法归入单向模式；跳过自动管理直至人工处理对冲")
+                hedge_reason = f"hedge_or_ambiguous_position symbol={sym} positionSide={hh!r}"
+                out(
+                    f"[live.alert] {hedge_reason} — halting automatic trading; "
+                    "manual review required (cannot manage hedge in one-way mode)"
+                )
+                position_manager.set_halt_for_manual_review(hedge_reason)
                 live_leaf["manage_error"] = "hedge_or_ambiguous_position"
 
             elif should_exit_from_trend(holding=hold, sig=sig, tparams=tpar):
+                entry_ex = _position_entry_avg(prrows, sym)
+                er = live_leaf.get("entry_reference")
+                if entry_ex is not None:
+                    entry_for_pnl = float(entry_ex)
+                elif isinstance(er, (int, float)):
+                    entry_for_pnl = float(er)
+                else:
+                    entry_for_pnl = float(mrk)
+                qty_exit = abs(float(amt)) if amt is not None else 0.0
+
                 cancel_protective_close_orders(signed_client, sym, emit=out)
                 position_manager.begin_exit(sym)
                 try:
                     cx = signed_client.close_symbol_position_market(symbol=sym)
                     out(f"[live] exit MARKET oid={cx.get('orderId')}")
+                    ts_exit = time.time()
+                    if qty_exit > 0.0:
+                        realized = linear_pnl_usdt(hold, qty_exit, entry_for_pnl, mrk)
+                        rk.monitor.record_realized_pnl(ts_exit, realized)
+                        out(f"[live][pnl] realized≈{realized:.4f} USDT (est. mark≈{mrk})")
                     position_manager.mark_exit_finished_to_cooldown(sym)
-                    position_manager.finish_cooldown_to_idle()
+                    post_exit_ts = ts_exit
+                    cooldown_until_ms = _merge_cooldown_until_ms(
+                        persisted_ms=cooldown_until_ms,
+                        monitor_cooldown_ts=rk.monitor.state.cooldown_until_ts,
+                        post_exit_ts=post_exit_ts,
+                        cooldown_seconds=limits.cooldown_seconds,
+                    )
+                    out(f"[live][cooldown] post-exit until_unix_ms={cooldown_until_ms}")
                 except Exception:
                     position_manager.mark_exit_abort_in_position(sym)
                     raise
@@ -782,9 +896,16 @@ def run_live_strategy_iteration(
                 live_leaf.setdefault("add_count", parse_add_count(live_leaf))
                 live_leaf["side"] = hold
 
-                limits = RiskLimits()
-                rk = RiskEngine(limits)
-                account = signed_client.account()
+                effective_lev = ensure_profit_tier_leverage(
+                    set_leverage_fn=lambda s, lev: signed_client.set_leverage(symbol=s, leverage=lev),
+                    symbol=sym,
+                    side=hold,
+                    avg_entry=entry_ref_f,
+                    mark=mrk,
+                    initial_leverage=pcfg.initial_leverage,
+                    live_leaf=live_leaf,
+                    emit=out,
+                )
                 _try_position_roll_add(
                     signed_client=signed_client,
                     symbol=sym,
@@ -800,6 +921,7 @@ def run_live_strategy_iteration(
                     account=account,
                     live_leaf=live_leaf,
                     trail_frac=trail_frac,
+                    effective_leverage=effective_lev,
                     emit=out,
                 )
 
@@ -818,7 +940,19 @@ def run_live_strategy_iteration(
                 )
                 live_leaf.update({"symbol": sym, "side": hold, "extreme": ex, "stop_live": stp, "mark_px": mrk})
 
-        elif position_manager.allow_scan_candidates():
+        if _cooldown_active(cooldown_until_ms):
+            remaining_s = max(0.0, (int(cooldown_until_ms) - int(time.time() * 1000)) / 1000.0)
+            out(f"[live][cooldown] active remaining≈{remaining_s:.0f}s — no candidate scan")
+        elif cooldown_until_ms is not None:
+            cooldown_until_ms = None
+            if position_manager.lock_state is TradeLockState.COOLDOWN:
+                try:
+                    position_manager.finish_cooldown_to_idle()
+                except Exception:
+                    pass
+            out("[live][cooldown] expired — candidate scan allowed")
+
+        if position_manager.allow_scan_candidates() and not _cooldown_active(cooldown_until_ms):
             signed_client.sync_server_time()
             matched, report = load_monitorable_specs(
                 signed_client, settings, min_count=pcfg.min_monitor_symbols
@@ -831,13 +965,14 @@ def run_live_strategy_iteration(
             )
             ranked = rank_directional_signals(assessed)
             specs_map = {s.symbol.upper(): s for s in matched}
-            limits = RiskLimits()
-            rk = RiskEngine(limits)
 
             ts = time.time()
             account = signed_client.account()
             acct_snap = parse_usdt_account_snapshot(account)
             avail_margin = acct_snap.available_margin_usdt
+            equity_lv = estimate_usdt_equity_for_risk(account=account)
+            rk.monitor.update_equity(ts, equity_lv)
+            rk.monitor.clear_cooldown_if_expired(ts)
             out(
                 f"[account_usdt] equity≈{acct_snap.equity_usdt:.4f} "
                 f"available≈{avail_margin:.4f} wallet≈{acct_snap.wallet_balance_usdt:.4f} "
@@ -985,4 +1120,6 @@ def run_live_strategy_iteration(
             pm=position_manager,
             live_leaf=live_leaf,
             clear_live=clear_live_snap,
+            rk=rk,
+            cooldown_until_unix_ms=cooldown_until_ms,
         )

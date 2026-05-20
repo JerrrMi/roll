@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Literal
+from typing import Any, Literal, Mapping
 
 Side = Literal["long", "short"]
 
@@ -364,6 +364,78 @@ class AccountRiskState:
     halted_daily_loss: bool = False
 
 
+def account_risk_state_to_mapping(state: AccountRiskState) -> dict[str, Any]:
+    return {
+        "peak_equity": state.peak_equity,
+        "day_anchor_equity": state.day_anchor_equity,
+        "day_anchor_date": state.day_anchor_date,
+        "consecutive_losses": state.consecutive_losses,
+        "cooldown_until_ts": state.cooldown_until_ts,
+        "halted_max_drawdown": state.halted_max_drawdown,
+        "halted_daily_loss": state.halted_daily_loss,
+    }
+
+
+def account_risk_state_from_mapping(raw: Mapping[str, Any] | None) -> AccountRiskState:
+    if not isinstance(raw, Mapping):
+        return AccountRiskState()
+    st = AccountRiskState()
+    for key in (
+        "peak_equity",
+        "day_anchor_equity",
+        "cooldown_until_ts",
+    ):
+        val = raw.get(key)
+        if isinstance(val, (int, float)) and not isinstance(val, bool):
+            setattr(st, key, float(val))
+    day = raw.get("day_anchor_date")
+    if isinstance(day, str) and day.strip():
+        st.day_anchor_date = day.strip()
+    cl = raw.get("consecutive_losses")
+    if isinstance(cl, int) and not isinstance(cl, bool):
+        st.consecutive_losses = max(int(cl), 0)
+    for key in ("halted_max_drawdown", "halted_daily_loss"):
+        val = raw.get(key)
+        if isinstance(val, bool):
+            setattr(st, key, val)
+    return st
+
+
+def parse_risk_limits_settings(settings: Mapping[str, Any]) -> RiskLimits | None:
+    """从 YAML `risk:` 块解析风控参数（live / 回测共用）。"""
+    raw = settings.get("risk")
+    if not isinstance(raw, dict):
+        return None
+    base = RiskLimits()
+    patch: dict[str, Any] = {}
+    if "max_single_loss_fraction" in raw and isinstance(raw["max_single_loss_fraction"], (int, float)):
+        patch["max_single_loss_fraction"] = float(raw["max_single_loss_fraction"])
+    if "max_position_fraction" in raw and isinstance(raw["max_position_fraction"], (int, float)):
+        patch["max_position_fraction"] = float(raw["max_position_fraction"])
+    if "kelly_extra_multiplier" in raw and isinstance(raw["kelly_extra_multiplier"], (int, float)):
+        patch["kelly_extra_multiplier"] = float(raw["kelly_extra_multiplier"])
+    if "max_drawdown_fraction" in raw and isinstance(raw["max_drawdown_fraction"], (int, float)):
+        patch["max_drawdown_fraction"] = float(raw["max_drawdown_fraction"])
+    if "max_daily_loss_fraction" in raw and isinstance(raw["max_daily_loss_fraction"], (int, float)):
+        patch["max_daily_loss_fraction"] = float(raw["max_daily_loss_fraction"])
+    if "cooldown_seconds" in raw and isinstance(raw["cooldown_seconds"], (int, float)):
+        patch["cooldown_seconds"] = float(raw["cooldown_seconds"])
+    if "max_consecutive_losses" in raw and isinstance(raw["max_consecutive_losses"], int):
+        patch["max_consecutive_losses"] = int(raw["max_consecutive_losses"])
+    kv = raw.get("kelly_variant")
+    if isinstance(kv, str):
+        u = kv.strip().upper()
+        if u == "FULL":
+            patch["kelly_variant"] = KellyVariant.FULL
+        elif u == "HALF":
+            patch["kelly_variant"] = KellyVariant.HALF
+        elif u == "QUARTER":
+            patch["kelly_variant"] = KellyVariant.QUARTER
+    if not patch:
+        return None
+    return replace(base, **patch)
+
+
 def _utc_date(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).date().isoformat()
 
@@ -635,8 +707,14 @@ class RiskEngine:
         if raw_k <= 0.0:
             reasons.append("kelly_non_positive")
 
-        self._monitor.update_equity(ts, equity)
+        circ_update = self._monitor.update_equity(ts, equity)
+        if not circ_update.allowed:
+            reasons.extend(circ_update.block_reasons)
+
         self._monitor.clear_cooldown_if_expired(ts)
+        circ_gate = self._monitor.gate_open(ts, equity)
+        if not circ_gate.allowed:
+            reasons.extend(circ_gate.block_reasons)
 
         pos: PositionSizeResult | None = None
         inc_qty = 0.0

@@ -8,15 +8,15 @@
 
 | 域                | Plan 要求项 | ✅    | ⚠️    | ❌    |
 | ----------------- | ----------- | ---- | ---- | ---- |
-| A. 核心滚仓策略   | 8           | 2    | 2    | 4    |
-| B. 出场与持仓管理 | 7           | 2    | 2    | 3    |
-| C. 风控与熔断     | 8           | 4    | 2    | 2    |
+| A. 核心滚仓策略   | 8           | 3    | 2    | 3    |
+| B. 出场与持仓管理 | 7           | 5    | 1    | 1    |
+| C. 风控与熔断     | 8           | 7    | 1    | 0    |
 | D. USD-M 基础设施 | 10          | 9    | 1    | 0    |
-| E. 交易所账户模式 | 4           | 0    | 2    | 2    |
+| E. 交易所账户模式 | 4           | 1    | 1    | 2    |
 | F. 回测与参数校准 | 5           | 3    | 1    | 1    |
-| G. 运维与状态机   | 6           | 4    | 2    | 0    |
+| G. 运维与状态机   | 6           | 5    | 1    | 0    |
 
-**结论**：3.0 **迁移层（USD-M API、对账、单轮开平仓）大体完成**；**「滚仓」差异化能力（加仓、降杠杆、完整退出/熔断）仍是主要缺口**。
+**结论**：3.0 **迁移层与 P1 风险闭环（COOLDOWN、账户熔断、趋势弱退出、hedge halt、盈利降杠杆）已接入 live**；**P0 滚仓加仓与 P2 策略完善项仍为后续重点**。
 
 ---
 
@@ -27,7 +27,7 @@
 | ID   | Plan 设计                                                  | 当前代码 | 缺口说明                                                     | 建议优先级 | 工作量 | 主要落点                                               |
 | ---- | ---------------------------------------------------------- | -------- | ------------------------------------------------------------ | ---------- | ------ | ------------------------------------------------------ |
 | A1   | **浮盈再投入 / 加仓**（USDT 权益含 uPnL；每轮 2–3 次上限） | ❌        | 持仓时 `allow_scan_candidates()` 为 false，无任何二次 MARKET 加仓路径 | **P0**     | L      | `usdm_auto_trade.py`, `risk.py`, `position_manager.py` |
-| A2   | **盈利后分层降杠杆**（25x→5x）                             | ❌        | 仅开仓前 `set_leverage(initial_leverage)`，持仓期间不调整    | **P1**     | M      | `usdm_auto_trade.py`, 新模块或 `strategy_loop` 参数    |
+| A2   | **盈利后分层降杠杆**（25x→5x）                             | ✅        | `position_roll.target_leverage_for_profit` + 持仓期 `set_leverage`；加仓 sizing 用 `effective_leverage` | —          | —      | `position_roll.py`, `usdm_auto_trade.py`               |
 | A3   | 多周期趋势评分 15m/1h/4h                                   | ✅        | `TrendModel` 已实现                                          | —          | —      | `trend_model.py`                                       |
 | A4   | long/short/no_trade + 拒绝原因                             | ✅        | 已实现                                                       | —          | —      | `trend_model.py`                                       |
 | A5   | 多标的扫描、单标的交易                                     | ✅        | `PositionManager` + 对账锁                                   | —          | —      | `position_manager.py`                                  |
@@ -44,10 +44,10 @@
 | B1   | **固定比例止损**（`stop_adverse_fraction`，默认 5%） | ✅        | 固定底价 + STOP_MARKET closePosition                         | —          | —      | `risk.py`, `usdm_auto_trade.py`                            |
 | B2   | **追踪止损**（盈利后抬高/下移 STOP）                 | ⚠️        | 逻辑有，但 YAML 默认**未启用** `trail_stop_fraction`         | **P2**     | S      | 配置 + 文档；代码已有                                      |
 | B3   | **ATR 止损**（`k × ATR`）                            | ❌        | `atr_stop_price()` 存在，主流程未接入                        | **P2**     | M      | `trend_model` 或独立指标 + `desired_protective_stop_price` |
-| B4   | **趋势反转退出**                                     | ⚠️        | 仅当信号变为**反向**且 \|score\|≥0.70；不是「评分跌破较弱退出阈值」 | **P1**     | S      | `should_exit_from_trend`                                   |
+| B4   | **趋势反转退出**                                     | ✅        | 反向强信号 + 同向 `score` 跌破 `exit_threshold`（默认 0.35） | —          | —      | `should_exit_from_trend`, `trend_model.py`                 |
 | B5   | **最大持仓时间**（如 48h / N 根 4h）                 | ❌        | 无时间维度退出                                               | **P2**     | S      | `usdm_auto_trade.py`, `backtest.py`                        |
 | B6   | 持仓期间维护 STOP（滚动改价）                        | ✅        | `ensure_or_roll_protective_stop`                             | —          | —      | `usdm_auto_trade.py`                                       |
-| B7   | 平仓后 **COOLDOWN**（禁止立即反手）                  | ⚠️        | 状态机有 COOLDOWN，但 live **平仓后立即** `finish_cooldown_to_idle()`；`cooldown_until_unix_ms` 持久化但未 enforced | **P1**     | S      | `usdm_auto_trade.py`, `state_store.py`                     |
+| B7   | 平仓后 **COOLDOWN**（禁止立即反手）                  | ✅        | 写 `cooldown_until_unix_ms`；扫描前检查；不再立即 `finish_cooldown_to_idle()` | —          | —      | `usdm_auto_trade.py`, `state_store.py`                     |
 | B8   | 持仓期间其他 symbol 只记录不下单                     | ✅        | `log_peer_symbol_signals_while_in_position`                  | —          | —      | `usdm_auto_trade.py`                                       |
 
 ---
@@ -59,11 +59,11 @@
 | C1   | 单笔最大亏损上限（~1–3% 权益）   | ✅        | `max_single_loss_fraction=0.02`，开仓 sizing 约束            | —          | —      | `risk.py`                           |
 | C2   | Kelly 门槛（非正 Kelly 不开仓）  | ✅        | `evaluate_open`                                              | —          | —      | `risk.py`                           |
 | C3   | max_position_fraction 上限       | ✅        | 开仓 sizing                                                  | —          | —      | `risk.py`                           |
-| C4   | **最大回撤熔断**                 | ⚠️        | `AccountRiskMonitor` 仅在 `evaluate_open` 调用；**回测/live 持仓期间不更新**；**不强制平已有仓** | **P1**     | M      | `usdm_auto_trade.py`, `backtest.py` |
-| C5   | **日内最大亏损熔断**             | ⚠️        | 同上                                                         | **P1**     | M      | 同上                                |
-| C6   | **连续亏损 + 冷却**              | ⚠️        | `record_realized_pnl` **未被 live/回测调用**；冷却时间未写入 state | **P1**     | M      | 平仓后 hook + `state_store`         |
-| C7   | 熔断时 **已有持仓仍须管理/保护** | ⚠️        | halt 后跳过管理分支不完整；Plan 要求 pause 新开、保留持仓管理 | **P1**     | S      | `usdm_auto_trade.py` 分支逻辑       |
-| C8   | 风控参数 **YAML 可配**           | ❌        | live 硬编码 `RiskLimits()`；仅回测有部分解析                 | **P2**     | S      | `config/*.yaml`, `strategy_loop.py` |
+| C4   | **最大回撤熔断**                 | ✅        | 每轮 `update_equity` + `account_risk` 持久化；触发后 `pause_opening_entries`（不强制平仓） | —          | —      | `usdm_auto_trade.py`, `risk.py`, `state_store.py` |
+| C5   | **日内最大亏损熔断**             | ✅        | 同上                                                         | —          | —      | 同上                                |
+| C6   | **连续亏损 + 冷却**              | ✅        | 平仓 `record_realized_pnl`；冷却写入 state + 扫描门控       | —          | —      | `usdm_auto_trade.py`, `state_store.py`         |
+| C7   | 熔断时 **已有持仓仍须管理/保护** | ✅        | 熔断用 pause 非 halt；halt 时仍允许 EXITING；持仓分支与 halt 解耦 | —          | —      | `usdm_auto_trade.py`, `position_manager.py`       |
+| C8   | 风控参数 **YAML 可配**           | ⚠️        | live 已接 `risk:` + `parse_risk_limits_settings`；testnet example 待补全 | **P2**     | S      | `config/*.yaml`, `risk.py` |
 
 ---
 
@@ -90,7 +90,7 @@
 | ---- | --------------------------------------- | -------- | ------------------------------------------------------------ | ---------- | ------ | -------------------------------- |
 | E1   | **逐仓/全仓** 须在配置或文档明确        | ⚠️        | 文档有要求，代码**不设置** `marginType`                      | **P2**     | S      | `binance_client` + YAML + README |
 | E2   | 启动前校验/设置 margin type             | ❌        | 无 API 调用                                                  | **P2**     | S      | `binance_client.py`              |
-| E3   | **单向净持仓** 为目标；hedge 异常应拒绝 | ⚠️        | hedge 时 `manage_error` 后**跳过管理**，不 halt、不平仓      | **P1**     | S      | `usdm_auto_trade.py`, 对账       |
+| E3   | **单向净持仓** 为目标；hedge 异常应拒绝 | ✅        | hedge → `set_halt_for_manual_review` + `[live.alert]` 日志   | —          | —      | `usdm_auto_trade.py`             |
 | E4   | 双向模式下正确平指定腿                  | ⚠️        | `close_symbol_position_market` 有 positionSide 逻辑，但未主动拒绝 hedge 开仓 | **P2**     | S      | 开仓前账户模式检查               |
 
 ---
@@ -112,7 +112,7 @@
 | ID   | Plan 设计                              | 当前代码 | 缺口说明                                                 | 建议优先级 | 工作量 | 主要落点             |
 | ---- | -------------------------------------- | -------- | -------------------------------------------------------- | ---------- | ------ | -------------------- |
 | G1   | `order_executor.py` 负责下单/撤单/确认 | ⚠️        | **仍是骨架**；实际逻辑在 `usdm_auto_trade.py`            | **P3**     | M      | 重构或删并文档说明   |
-| G2   | 异常时 pause 新开、保留持仓管理        | ⚠️        | `pause_opening_entries` 存在；与 halt/circuit 联动不完整 | **P1**     | S      | `usdm_auto_trade.py` |
+| G2   | 异常时 pause 新开、保留持仓管理        | ✅        | 异常/circuit 均 `pause_opening_entries`；持仓管理独立分支     | —          | —      | `usdm_auto_trade.py` |
 | G3   | 状态持久化（symbol/方向/止损/extreme） | ✅        | `state_store` + `live` leaf                              | —          | —      |                      |
 | G4   | live 单进程互斥锁                      | ✅        | `process_lock.py`                                        | —          | —      |                      |
 
@@ -132,15 +132,15 @@
 
 ---
 
-### P1 — 风险闭环（live 可长期跑）
+### P1 — 风险闭环（live 可长期跑）✅ 已完成
 
-| 顺序 | 任务                                                         | 验收标准                                                     |
-| ---- | ------------------------------------------------------------ | ------------------------------------------------------------ |
-| 4    | **B7**：真实 COOLDOWN（如 3600s，写 `cooldown_until_unix_ms`） | 平仓后 N 秒内不扫描新开仓                                    |
-| 5    | **C4–C7**：账户熔断接入 live 循环                            | 超回撤/日亏后 pause 新开；已有仓继续管 STOP；可选强制减仓/平仓策略 |
-| 6    | **B4**：趋势退出细化                                         | 除反向信号外，支持「同向 score 跌破 exit_threshold」         |
-| 7    | **E3**：hedge 检测 → halt + 明确告警                         | 不对 hedge 仓静默跳过管理                                    |
-| 8    | **A2**：盈利分层降杠杆（至少影响后续加仓 sizing）            | 文档表格行为可观测                                           |
+| 顺序 | 任务                                                         | 状态 | 验收标准                                                     |
+| ---- | ------------------------------------------------------------ | ---- | ------------------------------------------------------------ |
+| 4    | **B7**：真实 COOLDOWN（如 3600s，写 `cooldown_until_unix_ms`） | ✅    | 平仓后 N 秒内不扫描新开仓                                    |
+| 5    | **C4–C7**：账户熔断接入 live 循环                            | ✅    | 超回撤/日亏后 pause 新开；已有仓继续管 STOP                  |
+| 6    | **B4**：趋势退出细化                                         | ✅    | 除反向信号外，支持「同向 score 跌破 exit_threshold」         |
+| 7    | **E3**：hedge 检测 → halt + 明确告警                         | ✅    | 不对 hedge 仓静默跳过管理                                    |
+| 8    | **A2**：盈利分层降杠杆（至少影响后续加仓 sizing）            | ✅    | 日志 `[live][deleverage]` + 加仓用降低后杠杆                 |
 
 ---
 
@@ -151,7 +151,7 @@
 | 9    | **B2**：默认或文档明确启用 `trail_stop_fraction`             |
 | 10   | **B3**：ATR 止损（与固定/追踪取最保守）                      |
 | 11   | **B5**：最大持仓时间退出                                     |
-| 12   | **C8**：`risk:` YAML 块（max_drawdown、daily_loss、cooldown 等） |
+| 12   | **C8**：`risk:` YAML 块补全至 testnet example                |
 | 13   | **E1–E2**：margin type 检查/设置                             |
 | 14   | **F5**：180 天回测产出 USD-M 推荐参数写入 example YAML       |
 
