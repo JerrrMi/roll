@@ -2,6 +2,8 @@
 
 策略进程由 systemd 托管，在**项目根目录**（`WorkingDirectory`）运行，使用 **roll-env** 中的 Python，并加载对应环境的密钥与配置。
 
+**云服务器从零到 Live 常驻：** [`docs/cloud-server-live-deployment.md`](../../docs/cloud-server-live-deployment.md)。
+
 **当前系统标准：** Binance **USD-M / U 本位 USDT 永续**。live 配置须为 `product: usdm`、`rest_base: https://fapi.binance.com`、`api_prefix: /fapi/v1`。Testnet 为同一 Testnet host + `/fapi/v1`。**勿**使用 COIN-M 的 `dapi.binance.com` 或 `/dapi`。
 
 ## 文件位置
@@ -55,8 +57,23 @@ which python
 
 ## 安装单元
 
+### 推荐：自动替换路径
+
+```bash
+conda activate roll-env
+cd /opt/roll
+bash scripts/deploy/install-systemd.sh              # 仅 Testnet
+bash scripts/deploy/install-systemd.sh --live       # Testnet + live
+bash scripts/deploy/install-systemd.sh --live-only  # 仅 live（验收通过后）
+```
+
+脚本根据当前用户、`which python`（roll-env）与项目根目录生成 `/etc/systemd/system/*.service`。
+
+### 手动安装
+
 ```bash
 cd /opt/roll
+# 编辑 deploy/systemd/*.service 中的 User、WorkingDirectory、ExecStart Python 路径后：
 sudo cp deploy/systemd/roll-testnet.service /etc/systemd/system/
 sudo cp deploy/systemd/roll-live.service /etc/systemd/system/
 sudo systemctl daemon-reload
@@ -95,6 +112,13 @@ python -m main reconcile-state \
 ```
 
 确认对账输出无非预期持仓/挂单后再 `systemctl start`。
+
+**live 首次常驻（阶段 5）：** 完成 [`docs/live-go-live-acceptance.md`](../../docs/live-go-live-acceptance.md) 阶段 1–4 后：
+
+```bash
+export ROLL_ALLOW_SYSTEMD_START=1
+bash scripts/acceptance/phase5-live-systemd-start.sh
+```
 
 ## 常用 systemctl 命令
 

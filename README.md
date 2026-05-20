@@ -156,23 +156,42 @@ python -m main run-loop --config config/settings.live.yaml --secrets-file config
 4. 运行 `pytest tests/test_binance_config.py tests/test_signed_guard.py`：旧 `coin_m_prefix`、live `dapi` host、`/dapi/v1` 前缀应被拒绝。
 5. 故意交叉（例如在 Testnet 命令加 `--secrets-file config/secrets/live.env`）时，应对账到错误环境或鉴权失败——**不要**在生产中这样运行；正常运维应始终让 `--config`、`secrets.file` 与 `--secrets-file` 同属一个环境。
 
+## 云服务器 Live 实盘：完整开启流程
+
+从零部署到 **systemd 自动交易** 的端到端步骤（Ubuntu、验收、常驻）见：
+
+**[`docs/cloud-server-live-deployment.md`](docs/cloud-server-live-deployment.md)**
+
+快速路径：
+
+```bash
+cd /opt/roll
+bash scripts/deploy/bootstrap-ubuntu.sh          # Conda、依赖、示例配置
+# 编辑 config/secrets/*.env 与 settings.*.yaml
+bash scripts/acceptance/preflight.sh
+# 按 docs/live-go-live-acceptance.md 完成阶段 1–4
+bash scripts/deploy/install-systemd.sh --live-only
+export ROLL_ALLOW_SYSTEMD_START=1
+bash scripts/acceptance/phase5-live-systemd-start.sh
+```
+
+部署脚本说明：[`scripts/deploy/README.md`](scripts/deploy/README.md)。
+
 ## Ubuntu 云服务器：systemd 托管
 
 单元文件模板在仓库 **`deploy/systemd/`**，安装到服务器后为 **`/etc/systemd/system/roll-testnet.service`** 与 **`/etc/systemd/system/roll-live.service`**。详细安装与路径说明见 [`deploy/systemd/README.md`](deploy/systemd/README.md)。
 
 服务在**项目根目录**（`WorkingDirectory`，默认 `/opt/roll`）运行，使用 **`roll-env` 中的 Python**（`…/envs/roll-env/bin/python`，等价于 `conda activate roll-env`），并通过 **`EnvironmentFile`** 与 **`--secrets-file`** 加载对应密钥，通过 **`--config`** 使用对应环境的 YAML。
 
-### 安装（首次）
+### 安装（推荐：自动替换路径）
 
 ```bash
 conda activate roll-env
 cd /opt/roll
-pip install -e ".[dev]"
-# 编辑 deploy/systemd/*.service 中的 User、WorkingDirectory、Python 路径后：
-sudo cp deploy/systemd/roll-testnet.service /etc/systemd/system/
-sudo cp deploy/systemd/roll-live.service /etc/systemd/system/
-sudo systemctl daemon-reload
+bash scripts/deploy/install-systemd.sh --live-only   # 或省略 --live-only 同时装 Testnet
 ```
+
+也可手动复制并编辑 `deploy/systemd/*.service` 中的 `User`、`WorkingDirectory`、`ExecStart` Python 路径后 `sudo cp` 到 `/etc/systemd/system/` 并 `daemon-reload`。
 
 **live 默认不要开机自启**：安装后只用 `start`；除非你明确接受重启后自动恢复实盘进程，否则**不要**执行 `sudo systemctl enable roll-live`。
 
@@ -224,6 +243,7 @@ sudo systemctl disable roll-live
 
 在启用 **USD-M** 实盘 signed 自动交易或 `roll-live.service` 之前，按顺序完成 Testnet 闭环、live dry-run（≥24h）、live 对账、极小资金单轮 `--once` 与人工记录：
 
+- **云服务器端到端**：[`docs/cloud-server-live-deployment.md`](docs/cloud-server-live-deployment.md)
 - **流程与命令**：[`docs/live-go-live-acceptance.md`](docs/live-go-live-acceptance.md)
 - **可打印清单**：[`docs/checklists/live-go-live-checklist.md`](docs/checklists/live-go-live-checklist.md)
 - **自动化脚本**（Linux/WSL）：[`scripts/acceptance/README.md`](scripts/acceptance/README.md)
@@ -238,8 +258,10 @@ bash scripts/acceptance/preflight.sh
 
 ## 文档
 
+- **云服务器 Live 完整开启**：[`docs/cloud-server-live-deployment.md`](docs/cloud-server-live-deployment.md)。
 - **当前标准（3.0 USD-M）**：[`docs/滚仓系统实现的plan文档3.0版本.md`](docs/滚仓系统实现的plan文档3.0版本.md) §11–§12（系统使用方法与运维）。
 - **Live 最终验收**：[`docs/live-go-live-acceptance.md`](docs/live-go-live-acceptance.md)。
+- 部署脚本：[`scripts/deploy/README.md`](scripts/deploy/README.md)。
 - systemd 安装细节：[`deploy/systemd/README.md`](deploy/systemd/README.md)。
 - **历史参考（COIN-M，勿按此配置当前系统）**：
   - [`docs/滚仓系统实现的plan文档.md`](docs/滚仓系统实现的plan文档.md)（1.0）

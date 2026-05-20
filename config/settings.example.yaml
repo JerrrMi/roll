@@ -19,7 +19,7 @@ binance:
   # api_prefix: "/fapi/v1"
   recv_window_ms: 5000
   # 逐仓 ISOLATED / 全仓 CROSSED；apply_margin_type=true 时在无持仓冲突下自动 POST /marginType
-  margin_type: ISOLATED
+  margin_type: CROSSED
   apply_margin_type: false
 
 # 人类可读资产代码；运行时需通过 USD-M exchangeInfo 映射到 USDT 永续 symbol（如 DOGEUSDT）
@@ -27,6 +27,7 @@ candidates:
   - DOGE
   - AVAX
   - BTC
+  - ETH
   - SHIB
   - WIF
   - PEPE

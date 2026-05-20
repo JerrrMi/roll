@@ -4,6 +4,8 @@
 
 **当前系统标准：** Binance **USD-M / U 本位 USDT 永续**（`product: usdm`，`/fapi/v1`）。网页操作请在 **U 本位合约 / USD-M Futures** 板块进行，**不是** COIN-M 币本位。
 
+**云服务器从零部署：** 见 [`cloud-server-live-deployment.md`](cloud-server-live-deployment.md)（含 `bootstrap-ubuntu.sh`、`install-systemd.sh`）。
+
 **约定**
 
 - 项目根目录以下记为 `/opt/roll`（本地开发则为仓库根目录）。
@@ -29,7 +31,7 @@ cd /opt/roll   # 或你的仓库路径
 | 2 Live dry-run | 实盘公共行情连续观察 **≥24h**，不下单 | `phase2-live-dry-run-start.sh` + `phase2-live-dry-run-check.sh` |
 | 3 Live 对账 | 成功、无非预期持仓/挂单 | `phase3-live-reconcile.sh` |
 | 4 Live 首次 signed | 极小资金、`--once --no-dry-run` | `phase4-live-first-signed-once.sh` |
-| 5 systemd | 单轮确认后再常驻 | `sudo systemctl start roll-live` |
+| 5 systemd | 单轮确认后再常驻 | `install-systemd.sh` + `phase5-live-systemd-start.sh` |
 
 ```mermaid
 flowchart LR
@@ -278,8 +280,31 @@ bash scripts/acceptance/collect-session.sh "$ROLL_ACCEPTANCE_SESSION"
 
 **仅在阶段 4 人工批准后进行。**
 
+### 安装 systemd 单元（若尚未安装）
+
+```bash
+conda activate roll-env
+cd /opt/roll
+bash scripts/deploy/install-systemd.sh --live-only
+```
+
+脚本会按当前用户、`roll-env` 的 Python 与项目路径写入 `/etc/systemd/system/roll-live.service`。完整服务器部署见 [`cloud-server-live-deployment.md`](cloud-server-live-deployment.md)。
+
+### 启动 live 常驻
+
+**推荐（含启动前对账与进程检查）：**
+
+```bash
+conda activate roll-env
+cd /opt/roll
+export ROLL_ALLOW_SYSTEMD_START=1
+bash scripts/acceptance/phase5-live-systemd-start.sh
+```
+
+**手动等价步骤：**
+
 1. 再次对账：`bash scripts/acceptance/phase3-live-reconcile.sh`
-2. 确认**没有**前台 `run-loop --no-dry-run` 与 `roll-live.service` 同时运行。
+2. 确认**没有**前台 `run-loop --no-dry-run` 与 `roll-live.service` 同时运行；无 `data/roll_state_live.json.lock` 残留。
 3. 启动：
 
 ```bash
@@ -316,7 +341,9 @@ journalctl -u roll-live -n 200 --no-pager
 
 ## 相关文档
 
+- **云服务器端到端**：[`cloud-server-live-deployment.md`](cloud-server-live-deployment.md)
 - **当前标准（3.0 USD-M）**：[`docs/滚仓系统实现的plan文档3.0版本.md`](滚仓系统实现的plan文档3.0版本.md)（§11 使用方法、§12 检查清单与应急）
 - 日常使用：[`README.md`](../README.md)
+- 部署脚本：[`scripts/deploy/README.md`](../scripts/deploy/README.md)
 - systemd：[`deploy/systemd/README.md`](../deploy/systemd/README.md)
 - **历史（COIN-M，勿用于当前配置）**：[`docs/滚仓系统实现的plan文档2.0版本.md`](滚仓系统实现的plan文档2.0版本.md)

@@ -58,9 +58,11 @@
 
 ## F. 阶段 5 — 移交 systemd（单轮通过后再做）
 
+- [ ] `bash scripts/deploy/install-systemd.sh --live-only` 已执行
 - [ ] **不要**与前台 `run-loop --no-dry-run` 同时运行
 - [ ] 再次 `phase3-live-reconcile.sh` 通过
-- [ ] `sudo systemctl start roll-live`；`status` 为 `active (running)`
+- [ ] `export ROLL_ALLOW_SYSTEMD_START=1` 后 `phase5-live-systemd-start.sh`（或手动 `systemctl start roll-live`）
+- [ ] `status` 为 `active (running)`
 - [ ] `journalctl -u roll-live -n 200` 无持续错误
 - [ ] **未**执行 `enable roll-live`（除非明确接受重启自启）
 - [ ] 记录人工复查结论：是否批准常驻

@@ -15,13 +15,14 @@ binance:
   rest_base: "https://fapi.binance.com"
   api_prefix: "/fapi/v1"
   recv_window_ms: 5000
-  margin_type: ISOLATED
+  margin_type: CROSSED
   apply_margin_type: false
 
 candidates:
   - DOGE
   - AVAX
   - BTC
+  - ETH
   - SHIB
   - WIF
   - PEPE
