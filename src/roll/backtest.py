@@ -27,7 +27,15 @@ from roll.strategy_loop import (
     intervals_from_settings,
     StrategyLoopParams,
 )
-from roll.trend_model import Candle, TrendModel, TrendModelParams, TrendSignal, parse_binance_klines
+from roll.trend_model import (
+    Candle,
+    TrendModel,
+    TrendModelParams,
+    TrendSignal,
+    parse_binance_klines,
+    wilder_atr_last,
+)
+from roll.usdm_auto_trade import should_exit_max_hold
 
 TF_MS: dict[str, int] = {
     "15m": 15 * 60 * 1000,
@@ -458,12 +466,23 @@ def run_backtest(
             else:
                 extreme = min(extreme, lo)
 
+            atr_val: float | None = None
+            if strat_params.atr_stop_k is not None and strat_params.atr_stop_k > 0:
+                c15_hold = data[sym]["15m"]
+                j_atr = _end_index_closed(c15_hold, "15m", t_close_ms)
+                if j_atr >= 0:
+                    atr_slice = list(c15_hold[: j_atr + 1])
+                    a = wilder_atr_last(atr_slice, period=strat_params.atr_period)
+                    if math.isfinite(a) and a > 0:
+                        atr_val = float(a)
             stop_px = desired_protective_stop_price(
                 side_p,
                 float(entry_ref),
                 float(extreme),
                 float(strat_params.stop_adverse_fraction),
                 trail_frac,
+                atr=atr_val,
+                atr_stop_k=strat_params.atr_stop_k,
             )
 
             stopped = False
@@ -493,7 +512,14 @@ def run_backtest(
                             "4h": slice4h,
                         }
                     )
-                    if should_exit_from_trend(holding=side_p, sig=sig, tparams=trend_params):
+                    if should_exit_max_hold(
+                        opened_unix_ms=entry_ts,
+                        max_hold_hours=strat_params.max_hold_hours,
+                        now_unix=ts_sec,
+                    ):
+                        close_position(sym, side_p, px_close, ts_sec, "max_hold")
+                        cooldown_until_i = i + cfg.cooldown_bars_after_exit
+                    elif should_exit_from_trend(holding=side_p, sig=sig, tparams=trend_params):
                         close_position(sym, side_p, px_close, ts_sec, "trend_exit")
                         cooldown_until_i = i + cfg.cooldown_bars_after_exit
                     elif (

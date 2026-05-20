@@ -780,6 +780,20 @@ class BinanceCoinMSignedClient(BinanceUsdmClient):
             raise BinanceHTTPError(f"unexpected leverage payload: {type(data)}")
         return dict(data)
 
+    def change_margin_type(self, *, symbol: str, margin_type: str) -> dict[str, Any]:
+        """POST /fapi/v1/marginType — margin_type 为 ISOLATED 或 CROSSED。"""
+        mt = str(margin_type).strip().upper()
+        if mt not in ("ISOLATED", "CROSSED"):
+            raise ValueError(f"margin_type 须为 ISOLATED 或 CROSSED，收到 {margin_type!r}")
+        data = self._request_json_signed(
+            "POST",
+            "/marginType",
+            {"symbol": symbol.upper(), "marginType": mt},
+        )
+        if not isinstance(data, Mapping):
+            raise BinanceHTTPError(f"unexpected marginType payload: {type(data)}")
+        return dict(data)
+
     def new_order_raw(self, params: Mapping[str, Any]) -> dict[str, Any]:
         """POST /fapi/v1/order — 直接使用 Binance 参数字典（均已为 str / bool / int，数量等为 DECIMAL 字符串）。"""
         data = self._request_json_signed("POST", "/order", dict(params))

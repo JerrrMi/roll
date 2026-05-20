@@ -4,6 +4,7 @@
 异常时 `pause_opening_entries` 暂停新开仓；已有持仓仍维护保护单并按信号平仓。"""
 from __future__ import annotations
 
+import math
 import time
 import uuid
 from decimal import Decimal, InvalidOperation
@@ -34,6 +35,7 @@ from roll.risk import (
     Side,
     account_risk_state_from_mapping,
     account_risk_state_to_mapping,
+    atr_stop_price,
     fixed_stop_price as _fixed_stop_price,
     linear_pnl_usdt,
     notional_usdt,
@@ -51,7 +53,15 @@ from roll.strategy_loop import (
     rank_directional_signals,
     signal_side_to_risk_side,
 )
-from roll.trend_model import SignalSide, TrendModel, TrendModelParams, TrendSignal
+from roll.trend_model import (
+    Candle,
+    SignalSide,
+    TrendModel,
+    TrendModelParams,
+    TrendSignal,
+    parse_binance_klines,
+    wilder_atr_last,
+)
 from roll.usdm_account import (
     format_market_quantity_str,
     parse_min_notional_usdt,
@@ -205,12 +215,70 @@ def desired_protective_stop_price(
     extreme_px: float,
     adverse_frac: float,
     trail_frac: float | None,
+    *,
+    atr: float | None = None,
+    atr_stop_k: float | None = None,
 ) -> float:
-    base = _fixed_stop_price(side, entry_px, adverse_frac)
-    if trail_frac is None or trail_frac <= 0:
-        return base
-    trail_px = trailing_stop_price(side, extreme_px, trail_fraction=float(trail_frac))
-    return max(base, trail_px) if side == "long" else min(base, trail_px)
+    """固定 / 追踪 / ATR 止损取最保守价（多头取最高止损，空头取最低）。"""
+    candidates = [_fixed_stop_price(side, entry_px, adverse_frac)]
+    if trail_frac is not None and trail_frac > 0:
+        candidates.append(trailing_stop_price(side, extreme_px, trail_fraction=float(trail_frac)))
+    if (
+        atr is not None
+        and atr_stop_k is not None
+        and atr > 0.0
+        and atr_stop_k > 0.0
+        and math.isfinite(atr)
+    ):
+        candidates.append(atr_stop_price(side, entry_px, float(atr), float(atr_stop_k)))
+    if side == "long":
+        return max(candidates)
+    return min(candidates)
+
+
+def resolve_atr_for_symbol(
+    client: BinanceCoinMSignedClient,
+    symbol: str,
+    *,
+    interval: str,
+    period: int,
+    limit: int,
+) -> float | None:
+    """拉 K 线计算 Wilder ATR；失败或数据不足返回 None。"""
+    try:
+        rows = client.klines(symbol.upper(), interval, limit=max(limit, period + 2))
+        candles: list[Candle] = parse_binance_klines(rows)
+        atr = wilder_atr_last(candles, period=period)
+        if math.isfinite(atr) and atr > 0.0:
+            return float(atr)
+    except (ValueError, OSError, BinanceHTTPError):
+        pass
+    return None
+
+
+def should_exit_max_hold(
+    *,
+    opened_unix_ms: int | float | None,
+    max_hold_hours: float | None,
+    now_unix: float | None = None,
+) -> bool:
+    """``opened_unix_ms`` 可为毫秒时间戳或秒级 Unix 时间。"""
+    if max_hold_hours is None or max_hold_hours <= 0:
+        return False
+    if opened_unix_ms is None:
+        return False
+    now = time.time() if now_unix is None else float(now_unix)
+    opened = float(opened_unix_ms)
+    if opened >= 1e12:
+        opened /= 1000.0
+    return (now - opened) >= float(max_hold_hours) * 3600.0
+
+
+def _position_opened_unix_ms(live_leaf: Mapping[str, Any]) -> int | None:
+    raw = live_leaf.get("position_opened_unix_ms")
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        return int(raw)
+    return None
 
 
 def _fmt_stop_px(side: Side, raw_px: float, tick: str) -> str:
@@ -436,9 +504,19 @@ def ensure_or_roll_protective_stop(
     adverse_frac: float,
     trail_frac: float | None,
     emit: LoggerFn,
+    atr: float | None = None,
+    atr_stop_k: float | None = None,
 ) -> tuple[float, str]:
     tick, _mn, _st = _lots(spec, market=True)
-    want_raw = desired_protective_stop_price(hold_side, entry_ref, extreme_px, adverse_frac, trail_frac)
+    want_raw = desired_protective_stop_price(
+        hold_side,
+        entry_ref,
+        extreme_px,
+        adverse_frac,
+        trail_frac,
+        atr=atr,
+        atr_stop_k=atr_stop_k,
+    )
     want_s = _fmt_stop_px(hold_side, want_raw, tick)
     protectors = [
         dict(r) for r in client.open_orders(symbol=symbol.upper()) if _is_protective_close_order(dict(r))
@@ -462,6 +540,23 @@ def ensure_or_roll_protective_stop(
     return extreme_px, want_s
 
 
+def _protective_atr_kwargs(
+    client: BinanceCoinMSignedClient,
+    symbol: str,
+    pcfg: StrategyLoopParams,
+) -> dict[str, float | None]:
+    atr: float | None = None
+    if pcfg.atr_stop_k is not None and pcfg.atr_stop_k > 0:
+        atr = resolve_atr_for_symbol(
+            client,
+            symbol,
+            interval=pcfg.atr_interval,
+            period=pcfg.atr_period,
+            limit=pcfg.klines_limit,
+        )
+    return {"atr": atr, "atr_stop_k": pcfg.atr_stop_k}
+
+
 def _execute_open_flow(
     *,
     signed_client: BinanceCoinMSignedClient,
@@ -475,6 +570,8 @@ def _execute_open_flow(
     emit: LoggerFn,
     live_leaf: dict[str, Any],
     trail_frac: float | None,
+    atr: float | None = None,
+    atr_stop_k: float | None = None,
 ) -> None:
     pm.begin_enter(symbol)
     tick, _mn, step = _lots(spec, market=True)
@@ -512,6 +609,7 @@ def _execute_open_flow(
                 "side": side_pick,
                 "qty": qty_s,
                 "add_count": 0,
+                "position_opened_unix_ms": int(time.time() * 1000),
             }
         )
         _ext2, stops = ensure_or_roll_protective_stop(
@@ -524,6 +622,8 @@ def _execute_open_flow(
             adverse_frac=params.stop_adverse_fraction,
             trail_frac=trail_frac,
             emit=emit,
+            atr=atr,
+            atr_stop_k=atr_stop_k,
         )
         live_leaf.update({"stop_live": stops, "symbol": symbol.upper(), "extreme": float(_ext2), "mark_px": mark})
     except Exception:
@@ -543,6 +643,8 @@ def _execute_add_flow(
     live_leaf: dict[str, Any],
     trail_frac: float | None,
     adverse_frac: float,
+    atr: float | None = None,
+    atr_stop_k: float | None = None,
 ) -> None:
     """持仓中 MARKET 加仓（不经过 ENTERING 状态机）。"""
     qty_s = format_market_quantity_str(spec, qty_add)
@@ -586,6 +688,8 @@ def _execute_add_flow(
         adverse_frac=adverse_frac,
         trail_frac=trail_frac,
         emit=emit,
+        atr=atr,
+        atr_stop_k=atr_stop_k,
     )
     live_leaf.update({"stop_live": stops, "symbol": symbol.upper(), "mark_px": mark})
 
@@ -608,6 +712,8 @@ def _try_position_roll_add(
     trail_frac: float | None,
     effective_leverage: int,
     emit: LoggerFn,
+    atr: float | None = None,
+    atr_stop_k: float | None = None,
 ) -> None:
     """浮盈滚仓：趋势仍强 + 浮盈 + 次数未满 → 风控增量 sizing → MARKET 加仓。"""
     add_count = parse_add_count(live_leaf)
@@ -706,6 +812,8 @@ def _try_position_roll_add(
         live_leaf=live_leaf,
         trail_frac=trail_frac,
         adverse_frac=float(pcfg.stop_adverse_fraction),
+        atr=atr,
+        atr_stop_k=atr_stop_k,
     )
 
 
@@ -743,8 +851,11 @@ def run_live_strategy_iteration(
         if pu != su:
             raise RuntimeError("自动交易下 strategy.public_rest_base 必须与 binance.rest_base（signed）完全一致或留空")
 
+    from roll.account_modes import ensure_symbol_margin_type, parse_margin_mode_settings
+
     tpl = TrendModel(trend_params) if trend_params is not None else TrendModel()
     tpar = tpl.params
+    margin_cfg = parse_margin_mode_settings(settings)
     trail_frac: float | None = None
     if pcfg.trail_stop_fraction is not None and pcfg.trail_stop_fraction > 0:
         trail_frac = float(pcfg.trail_stop_fraction)
@@ -835,110 +946,139 @@ def run_live_strategy_iteration(
                 position_manager.set_halt_for_manual_review(hedge_reason)
                 live_leaf["manage_error"] = "hedge_or_ambiguous_position"
 
-            elif should_exit_from_trend(holding=hold, sig=sig, tparams=tpar):
-                entry_ex = _position_entry_avg(prrows, sym)
-                er = live_leaf.get("entry_reference")
-                if entry_ex is not None:
-                    entry_for_pnl = float(entry_ex)
-                elif isinstance(er, (int, float)):
-                    entry_for_pnl = float(er)
-                else:
-                    entry_for_pnl = float(mrk)
-                qty_exit = abs(float(amt)) if amt is not None else 0.0
-
-                cancel_protective_close_orders(signed_client, sym, emit=out)
-                position_manager.begin_exit(sym)
-                try:
-                    cx = signed_client.close_symbol_position_market(symbol=sym)
-                    out(f"[live] exit MARKET oid={cx.get('orderId')}")
-                    ts_exit = time.time()
-                    if qty_exit > 0.0:
-                        realized = linear_pnl_usdt(hold, qty_exit, entry_for_pnl, mrk)
-                        rk.monitor.record_realized_pnl(ts_exit, realized)
-                        out(f"[live][pnl] realized≈{realized:.4f} USDT (est. mark≈{mrk})")
-                    position_manager.mark_exit_finished_to_cooldown(sym)
-                    post_exit_ts = ts_exit
-                    cooldown_until_ms = _merge_cooldown_until_ms(
-                        persisted_ms=cooldown_until_ms,
-                        monitor_cooldown_ts=rk.monitor.state.cooldown_until_ts,
-                        post_exit_ts=post_exit_ts,
-                        cooldown_seconds=limits.cooldown_seconds,
-                    )
-                    out(f"[live][cooldown] post-exit until_unix_ms={cooldown_until_ms}")
-                except Exception:
-                    position_manager.mark_exit_abort_in_position(sym)
-                    raise
-                live_leaf = {}
-                clear_live_snap = True
-
             else:
-                entry_ex = _position_entry_avg(prrows, sym)
-                er = live_leaf.get("entry_reference")
-                if entry_ex is not None:
-                    entry_ref_f = float(entry_ex)
-                elif isinstance(er, (int, float)):
-                    entry_ref_f = float(er)
+                if _position_opened_unix_ms(live_leaf) is None:
+                    live_leaf["position_opened_unix_ms"] = int(time.time() * 1000)
+
+                exit_reason: str | None = None
+                if should_exit_max_hold(
+                    opened_unix_ms=_position_opened_unix_ms(live_leaf),
+                    max_hold_hours=pcfg.max_hold_hours,
+                ):
+                    opened_s = float(_position_opened_unix_ms(live_leaf) or 0) / 1000.0
+                    held_h = (time.time() - opened_s) / 3600.0
+                    exit_reason = f"max_hold:{held_h:.2f}h>={pcfg.max_hold_hours}h"
+                    out(f"[live][exit] reason={exit_reason}")
+                elif should_exit_from_trend(holding=hold, sig=sig, tparams=tpar):
+                    exit_reason = "trend_exit"
+
+                if exit_reason is not None:
+                    entry_ex = _position_entry_avg(prrows, sym)
+                    er = live_leaf.get("entry_reference")
+                    if entry_ex is not None:
+                        entry_for_pnl = float(entry_ex)
+                    elif isinstance(er, (int, float)):
+                        entry_for_pnl = float(er)
+                    else:
+                        entry_for_pnl = float(mrk)
+                    qty_exit = abs(float(amt)) if amt is not None else 0.0
+
+                    cancel_protective_close_orders(signed_client, sym, emit=out)
+                    position_manager.begin_exit(sym)
+                    try:
+                        cx = signed_client.close_symbol_position_market(symbol=sym)
+                        out(f"[live] exit MARKET oid={cx.get('orderId')} reason={exit_reason}")
+                        ts_exit = time.time()
+                        if qty_exit > 0.0:
+                            realized = linear_pnl_usdt(hold, qty_exit, entry_for_pnl, mrk)
+                            rk.monitor.record_realized_pnl(ts_exit, realized)
+                            out(f"[live][pnl] realized≈{realized:.4f} USDT (est. mark≈{mrk})")
+                        position_manager.mark_exit_finished_to_cooldown(sym)
+                        post_exit_ts = ts_exit
+                        cooldown_until_ms = _merge_cooldown_until_ms(
+                            persisted_ms=cooldown_until_ms,
+                            monitor_cooldown_ts=rk.monitor.state.cooldown_until_ts,
+                            post_exit_ts=post_exit_ts,
+                            cooldown_seconds=limits.cooldown_seconds,
+                        )
+                        out(f"[live][cooldown] post-exit until_unix_ms={cooldown_until_ms}")
+                    except Exception:
+                        position_manager.mark_exit_abort_in_position(sym)
+                        raise
+                    live_leaf = {}
+                    clear_live_snap = True
+
                 else:
-                    entry_ref_f = float(mrk)
-                ex0 = (
-                    live_leaf.get("extreme")
-                    if isinstance(live_leaf.get("extreme"), (int, float))
-                    else entry_ref_f
-                )
-                ex = float(ex0)
-                ex = max(ex, mrk) if hold == "long" else min(ex, mrk)
-                live_leaf = merge_roll_live_state(
-                    live_leaf,
-                    entry_reference=entry_ref_f,
-                    extreme=ex,
-                    total_qty=abs(float(amt)) if amt is not None else None,
-                )
-                live_leaf.setdefault("add_count", parse_add_count(live_leaf))
-                live_leaf["side"] = hold
+                    ensure_symbol_margin_type(signed_client, sym, margin_cfg, emit=out)
+                    prot_atr = _protective_atr_kwargs(signed_client, sym, pcfg)
+                    if prot_atr.get("atr") is not None:
+                        out(
+                            f"[live][atr_stop] atr≈{prot_atr['atr']:.8g} "
+                            f"k={prot_atr.get('atr_stop_k')} interval={pcfg.atr_interval}"
+                        )
+                    entry_ex = _position_entry_avg(prrows, sym)
+                    er = live_leaf.get("entry_reference")
+                    if entry_ex is not None:
+                        entry_ref_f = float(entry_ex)
+                    elif isinstance(er, (int, float)):
+                        entry_ref_f = float(er)
+                    else:
+                        entry_ref_f = float(mrk)
+                    ex0 = (
+                        live_leaf.get("extreme")
+                        if isinstance(live_leaf.get("extreme"), (int, float))
+                        else entry_ref_f
+                    )
+                    ex = float(ex0)
+                    ex = max(ex, mrk) if hold == "long" else min(ex, mrk)
+                    live_leaf = merge_roll_live_state(
+                        live_leaf,
+                        entry_reference=entry_ref_f,
+                        extreme=ex,
+                        total_qty=abs(float(amt)) if amt is not None else None,
+                    )
+                    live_leaf.setdefault("add_count", parse_add_count(live_leaf))
+                    live_leaf["side"] = hold
 
-                effective_lev = ensure_profit_tier_leverage(
-                    set_leverage_fn=lambda s, lev: signed_client.set_leverage(symbol=s, leverage=lev),
-                    symbol=sym,
-                    side=hold,
-                    avg_entry=entry_ref_f,
-                    mark=mrk,
-                    initial_leverage=pcfg.initial_leverage,
-                    live_leaf=live_leaf,
-                    emit=out,
-                )
-                _try_position_roll_add(
-                    signed_client=signed_client,
-                    symbol=sym,
-                    spec=spec,
-                    hold=hold,
-                    amt=amt,
-                    mark=mrk,
-                    sig=sig,
-                    tparams=tpar,
-                    pcfg=pcfg,
-                    rk=rk,
-                    limits=limits,
-                    account=account,
-                    live_leaf=live_leaf,
-                    trail_frac=trail_frac,
-                    effective_leverage=effective_lev,
-                    emit=out,
-                )
+                    effective_lev = ensure_profit_tier_leverage(
+                        set_leverage_fn=lambda s, lev: signed_client.set_leverage(symbol=s, leverage=lev),
+                        symbol=sym,
+                        side=hold,
+                        avg_entry=entry_ref_f,
+                        mark=mrk,
+                        initial_leverage=pcfg.initial_leverage,
+                        live_leaf=live_leaf,
+                        emit=out,
+                    )
+                    _try_position_roll_add(
+                        signed_client=signed_client,
+                        symbol=sym,
+                        spec=spec,
+                        hold=hold,
+                        amt=amt,
+                        mark=mrk,
+                        sig=sig,
+                        tparams=tpar,
+                        pcfg=pcfg,
+                        rk=rk,
+                        limits=limits,
+                        account=account,
+                        live_leaf=live_leaf,
+                        trail_frac=trail_frac,
+                        effective_leverage=effective_lev,
+                        emit=out,
+                        atr=prot_atr.get("atr"),
+                        atr_stop_k=prot_atr.get("atr_stop_k"),
+                    )
 
-                entry_ref_f = float(live_leaf.get("entry_reference", entry_ref_f))
-                ex = float(live_leaf.get("extreme", ex))
-                _, stp = ensure_or_roll_protective_stop(
-                    client=signed_client,
-                    symbol=sym,
-                    spec=spec,
-                    hold_side=hold,
-                    entry_ref=float(entry_ref_f),
-                    extreme_px=ex,
-                    adverse_frac=float(pcfg.stop_adverse_fraction),
-                    trail_frac=trail_frac,
-                    emit=out,
-                )
-                live_leaf.update({"symbol": sym, "side": hold, "extreme": ex, "stop_live": stp, "mark_px": mrk})
+                    entry_ref_f = float(live_leaf.get("entry_reference", entry_ref_f))
+                    ex = float(live_leaf.get("extreme", ex))
+                    _, stp = ensure_or_roll_protective_stop(
+                        client=signed_client,
+                        symbol=sym,
+                        spec=spec,
+                        hold_side=hold,
+                        entry_ref=float(entry_ref_f),
+                        extreme_px=ex,
+                        adverse_frac=float(pcfg.stop_adverse_fraction),
+                        trail_frac=trail_frac,
+                        emit=out,
+                        atr=prot_atr.get("atr"),
+                        atr_stop_k=prot_atr.get("atr_stop_k"),
+                    )
+                    live_leaf.update(
+                        {"symbol": sym, "side": hold, "extreme": ex, "stop_live": stp, "mark_px": mrk}
+                    )
 
         if _cooldown_active(cooldown_until_ms):
             remaining_s = max(0.0, (int(cooldown_until_ms) - int(time.time() * 1000)) / 1000.0)
@@ -1093,7 +1233,9 @@ def run_live_strategy_iteration(
                     out(f"[risk_try rank={rank_idx}] symbol={spx_v} side={sk_side} REJECT {reasons_join}")
 
                 if sym_pick_o and side_pick_o and qty_for_open > 0:
+                    ensure_symbol_margin_type(signed_client, sym_pick_o, margin_cfg, emit=out)
                     px_open = fetch_ticker_px(signed_client, sym_pick_o)
+                    prot_open = _protective_atr_kwargs(signed_client, sym_pick_o, pcfg)
                     _execute_open_flow(
                         signed_client=signed_client,
                         pm=position_manager,
@@ -1106,6 +1248,8 @@ def run_live_strategy_iteration(
                         emit=out,
                         live_leaf=live_leaf,
                         trail_frac=trail_frac,
+                        atr=prot_open.get("atr"),
+                        atr_stop_k=prot_open.get("atr_stop_k"),
                     )
 
     except InsufficientMonitorableSymbolsError:

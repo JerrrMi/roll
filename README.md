@@ -66,6 +66,14 @@ cp config/settings.example.yaml config/settings.yaml
 - `state.path` 必须指向各自 JSON（`roll_state_testnet.json` / `roll_state_live.json`）。
 - `strategy.live_trading_enabled` 在示例中**默认为 false**；仅在你完整审查配置、密钥权限与对账结果后，才可在 live 配置中改为 `true`。
 
+### 保证金模式（逐仓 / 全仓）
+
+示例 YAML 中 `binance.margin_type` 为 **`ISOLATED`（逐仓）** 或 **`CROSSED`（全仓）**。`apply_margin_type: false`（默认）时仅校验交易所当前模式是否与配置一致；设为 `true` 时会在开仓前尝试 `POST /fapi/v1/marginType`（**有持仓时交易所可能拒绝变更**）。上线前请在 Binance 合约账户确认模式与配置一致。
+
+### 策略保护止损（P2 默认）
+
+示例 `strategy` 块已启用 USD-M 推荐参数：`trail_stop_fraction: 0.02`、`atr_stop_k: 1.5`、`max_hold_hours: 48`。live 循环中三者与固定比例止损合并为**最保守**保护价；超时持仓将市价平仓。
+
 ## Binance API 密钥（本地文件，推荐）
 
 在 Binance **Futures Testnet** 创建 **USD-M（U 本位合约）** 可用的 Key（**不要**开启提现）。实盘 Key 须单独创建、**禁止提现**，并建议 IP 白名单；须具备 USD-M Futures 权限。

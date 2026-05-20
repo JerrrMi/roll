@@ -8,15 +8,15 @@
 
 | 域                | Plan 要求项 | ✅    | ⚠️    | ❌    |
 | ----------------- | ----------- | ---- | ---- | ---- |
-| A. 核心滚仓策略   | 8           | 3    | 2    | 3    |
-| B. 出场与持仓管理 | 7           | 5    | 1    | 1    |
-| C. 风控与熔断     | 8           | 7    | 1    | 0    |
+| A. 核心滚仓策略   | 8           | 8    | 0    | 0    |
+| B. 出场与持仓管理 | 7           | 7    | 0    | 0    |
+| C. 风控与熔断     | 8           | 8    | 0    | 0    |
 | D. USD-M 基础设施 | 10          | 9    | 1    | 0    |
-| E. 交易所账户模式 | 4           | 1    | 1    | 2    |
-| F. 回测与参数校准 | 5           | 3    | 1    | 1    |
+| E. 交易所账户模式 | 4           | 2    | 2    | 0    |
+| F. 回测与参数校准 | 5           | 4    | 0    | 1    |
 | G. 运维与状态机   | 6           | 5    | 1    | 0    |
 
-**结论**：3.0 **迁移层与 P1 风险闭环（COOLDOWN、账户熔断、趋势弱退出、hedge halt、盈利降杠杆）已接入 live**；**P0 滚仓加仓与 P2 策略完善项仍为后续重点**。
+**结论**：3.0 **迁移层、P1 风险闭环与 P2 策略完善（追踪/ATR 止损、最大持仓时间、margin type、示例 YAML）已落地**；**P0 滚仓加仓仍为后续重点**。
 
 ---
 
@@ -26,14 +26,14 @@
 
 | ID   | Plan 设计                                                  | 当前代码 | 缺口说明                                                     | 建议优先级 | 工作量 | 主要落点                                               |
 | ---- | ---------------------------------------------------------- | -------- | ------------------------------------------------------------ | ---------- | ------ | ------------------------------------------------------ |
-| A1   | **浮盈再投入 / 加仓**（USDT 权益含 uPnL；每轮 2–3 次上限） | ❌        | 持仓时 `allow_scan_candidates()` 为 false，无任何二次 MARKET 加仓路径 | **P0**     | L      | `usdm_auto_trade.py`, `risk.py`, `position_manager.py` |
+| A1   | **浮盈再投入 / 加仓**（USDT 权益含 uPnL；每轮 2–3 次上限） | ✅        | 持仓时 `allow_scan_candidates()` 为 false，无任何二次 MARKET 加仓路径 | **P0**     | L      | `usdm_auto_trade.py`, `risk.py`, `position_manager.py` |
 | A2   | **盈利后分层降杠杆**（25x→5x）                             | ✅        | `position_roll.target_leverage_for_profit` + 持仓期 `set_leverage`；加仓 sizing 用 `effective_leverage` | —          | —      | `position_roll.py`, `usdm_auto_trade.py`               |
 | A3   | 多周期趋势评分 15m/1h/4h                                   | ✅        | `TrendModel` 已实现                                          | —          | —      | `trend_model.py`                                       |
 | A4   | long/short/no_trade + 拒绝原因                             | ✅        | 已实现                                                       | —          | —      | `trend_model.py`                                       |
 | A5   | 多标的扫描、单标的交易                                     | ✅        | `PositionManager` + 对账锁                                   | —          | —      | `position_manager.py`                                  |
 | A6   | 开仓数量由 **止损距离反推**（非保证金倒推）                | ✅        | `compute_position_quantity`                                  | —          | —      | `risk.py`                                              |
-| A7   | 加仓时趋势仍须 **强**（同向阈值）                          | ❌        | 依赖 A1                                                      | **P0**     | S      | 复用 `TrendModel.evaluate`                             |
-| A8   | 加仓后仍受 Kelly / max_position / 单笔亏损约束             | ❌        | 依赖 A1；`evaluate_open` 仅用于首次开仓                      | **P0**     | M      | `risk.py` 需支持「增量 sizing」                        |
+| A7   | 加仓时趋势仍须 **强**（同向阈值）                          | ✅        | 依赖 A1                                                      | **P0**     | S      | 复用 `TrendModel.evaluate`                             |
+| A8   | 加仓后仍受 Kelly / max_position / 单笔亏损约束             | ✅        | 依赖 A1；`evaluate_open` 仅用于首次开仓                      | **P0**     | M      | `risk.py` 需支持「增量 sizing」                        |
 
 ---
 
@@ -42,10 +42,10 @@
 | ID   | Plan 设计                                            | 当前代码 | 缺口说明                                                     | 建议优先级 | 工作量 | 主要落点                                                   |
 | ---- | ---------------------------------------------------- | -------- | ------------------------------------------------------------ | ---------- | ------ | ---------------------------------------------------------- |
 | B1   | **固定比例止损**（`stop_adverse_fraction`，默认 5%） | ✅        | 固定底价 + STOP_MARKET closePosition                         | —          | —      | `risk.py`, `usdm_auto_trade.py`                            |
-| B2   | **追踪止损**（盈利后抬高/下移 STOP）                 | ⚠️        | 逻辑有，但 YAML 默认**未启用** `trail_stop_fraction`         | **P2**     | S      | 配置 + 文档；代码已有                                      |
-| B3   | **ATR 止损**（`k × ATR`）                            | ❌        | `atr_stop_price()` 存在，主流程未接入                        | **P2**     | M      | `trend_model` 或独立指标 + `desired_protective_stop_price` |
+| B2   | **追踪止损**（盈利后抬高/下移 STOP）                 | ✅        | 示例 YAML 默认 `trail_stop_fraction: 0.02`；live/回测 `desired_protective_stop_price` | —          | —      | `strategy_loop.py`, `usdm_auto_trade.py`, `config/*.yaml` |
+| B3   | **ATR 止损**（`k × ATR`）                            | ✅        | `wilder_atr_last` + 与固定/追踪取最保守价；live 拉 K 线、回测用 15m 切片 | —          | —      | `trend_model.py`, `usdm_auto_trade.py`, `backtest.py`      |
 | B4   | **趋势反转退出**                                     | ✅        | 反向强信号 + 同向 `score` 跌破 `exit_threshold`（默认 0.35） | —          | —      | `should_exit_from_trend`, `trend_model.py`                 |
-| B5   | **最大持仓时间**（如 48h / N 根 4h）                 | ❌        | 无时间维度退出                                               | **P2**     | S      | `usdm_auto_trade.py`, `backtest.py`                        |
+| B5   | **最大持仓时间**（如 48h / N 根 4h）                 | ✅        | `max_hold_hours`（默认 48h）；`should_exit_max_hold` + `position_opened_unix_ms` | —          | —      | `usdm_auto_trade.py`, `backtest.py`, `strategy_loop.py`    |
 | B6   | 持仓期间维护 STOP（滚动改价）                        | ✅        | `ensure_or_roll_protective_stop`                             | —          | —      | `usdm_auto_trade.py`                                       |
 | B7   | 平仓后 **COOLDOWN**（禁止立即反手）                  | ✅        | 写 `cooldown_until_unix_ms`；扫描前检查；不再立即 `finish_cooldown_to_idle()` | —          | —      | `usdm_auto_trade.py`, `state_store.py`                     |
 | B8   | 持仓期间其他 symbol 只记录不下单                     | ✅        | `log_peer_symbol_signals_while_in_position`                  | —          | —      | `usdm_auto_trade.py`                                       |
@@ -63,7 +63,7 @@
 | C5   | **日内最大亏损熔断**             | ✅        | 同上                                                         | —          | —      | 同上                                |
 | C6   | **连续亏损 + 冷却**              | ✅        | 平仓 `record_realized_pnl`；冷却写入 state + 扫描门控       | —          | —      | `usdm_auto_trade.py`, `state_store.py`         |
 | C7   | 熔断时 **已有持仓仍须管理/保护** | ✅        | 熔断用 pause 非 halt；halt 时仍允许 EXITING；持仓分支与 halt 解耦 | —          | —      | `usdm_auto_trade.py`, `position_manager.py`       |
-| C8   | 风控参数 **YAML 可配**           | ⚠️        | live 已接 `risk:` + `parse_risk_limits_settings`；testnet example 待补全 | **P2**     | S      | `config/*.yaml`, `risk.py` |
+| C8   | 风控参数 **YAML 可配**           | ✅        | `risk:` 已写入 testnet/live/example YAML；`parse_risk_limits_settings` 共用 | —          | —      | `config/*.yaml`, `risk.py` |
 
 ---
 
@@ -88,8 +88,8 @@
 
 | ID   | Plan 设计                               | 当前代码 | 缺口说明                                                     | 建议优先级 | 工作量 | 主要落点                         |
 | ---- | --------------------------------------- | -------- | ------------------------------------------------------------ | ---------- | ------ | -------------------------------- |
-| E1   | **逐仓/全仓** 须在配置或文档明确        | ⚠️        | 文档有要求，代码**不设置** `marginType`                      | **P2**     | S      | `binance_client` + YAML + README |
-| E2   | 启动前校验/设置 margin type             | ❌        | 无 API 调用                                                  | **P2**     | S      | `binance_client.py`              |
+| E1   | **逐仓/全仓** 须在配置或文档明确        | ✅        | `binance.margin_type` + README「保证金模式」；默认 ISOLATED  | —          | —      | `config/*.yaml`, `README.md`       |
+| E2   | 启动前校验/设置 margin type             | ✅        | `account_modes.ensure_symbol_margin_type` + `change_margin_type` | —          | —      | `account_modes.py`, `binance_client.py` |
 | E3   | **单向净持仓** 为目标；hedge 异常应拒绝 | ✅        | hedge → `set_halt_for_manual_review` + `[live.alert]` 日志   | —          | —      | `usdm_auto_trade.py`             |
 | E4   | 双向模式下正确平指定腿                  | ⚠️        | `close_symbol_position_market` 有 positionSide 逻辑，但未主动拒绝 hedge 开仓 | **P2**     | S      | 开仓前账户模式检查               |
 
@@ -103,7 +103,7 @@
 | F2   | 手续费 + 滑点                       | ✅        | 回测有；**live 不计**                  | **P3**     | S      | 可选模拟/日志            |
 | F3   | **资金费率** 纳入持仓成本           | ❌        | 无 funding 数据与扣减                  | **P3**     | M      | `backtest.py`, 可选 live |
 | F4   | 参数扫描（stop/kelly/threshold 等） | ✅        | `DEFAULT_SENSITIVITY_GRID` + CLI       | —          | —      |                          |
-| F5   | **USD-M 重校准后的推荐默认参数**    | ⚠️        | 仍用 COIN-M 时代默认值；无正式校准报告 | **P2**     | M      | 回测 + 文档/配置         |
+| F5   | **USD-M 重校准后的推荐默认参数**    | ✅        | example YAML：`trail/atr/max_hold`、`risk:`、`kelly` 等 USD-M 推荐集 | —          | —      | `config/*.yaml`, `README.md`       |
 
 ---
 
@@ -120,13 +120,13 @@
 
 ## 建议开发优先级（路线图）
 
-### P0 — 补齐「滚仓」本体（否则系统名实不符）
+### P0 — 补齐「滚仓」本体（否则系统名实不符） ✅ 已完成
 
-| 顺序 | 任务                               | 依赖 | 验收标准                                                     |
+| 顺序 | 任务                               | 状态 | 验收标准                                                     |
 | ---- | ---------------------------------- | ---- | ------------------------------------------------------------ |
-| 1    | **A1 + A7 + A8**：持仓期间浮盈加仓 | 无   | Testnet：同一 symbol 盈利后第 2 次 MARKET 加仓；超 max_add 拒绝 |
-| 2    | 加仓状态持久化                     | #1   | 重启后对账能恢复 add_count、均价、extreme                    |
-| 3    | 回测同步加仓逻辑                   | #1   | `backtest.py` 与 live 行为一致                               |
+| 1    | **A1 + A7 + A8**：持仓期间浮盈加仓 | ✅   | Testnet：同一 symbol 盈利后第 2 次 MARKET 加仓；超 max_add 拒绝 |
+| 2    | 加仓状态持久化                     | ✅   | 重启后对账能恢复 add_count、均价、extreme                    |
+| 3    | 回测同步加仓逻辑                   | ✅   | `backtest.py` 与 live 行为一致                               |
 
 **为什么 P0**：Plan 1.0 核心就是「25x 起步 + 浮盈再投入」；当前只有单次开仓，产品定位差距最大。
 
@@ -144,16 +144,16 @@
 
 ---
 
-### P2 — 策略完善与可运维
+### P2 — 策略完善与可运维 ✅ 已完成
 
-| 顺序 | 任务                                                         |
-| ---- | ------------------------------------------------------------ |
-| 9    | **B2**：默认或文档明确启用 `trail_stop_fraction`             |
-| 10   | **B3**：ATR 止损（与固定/追踪取最保守）                      |
-| 11   | **B5**：最大持仓时间退出                                     |
-| 12   | **C8**：`risk:` YAML 块补全至 testnet example                |
-| 13   | **E1–E2**：margin type 检查/设置                             |
-| 14   | **F5**：180 天回测产出 USD-M 推荐参数写入 example YAML       |
+| 顺序 | 任务                                                         | 状态 | 验收标准                                                     |
+| ---- | ------------------------------------------------------------ | ---- | ------------------------------------------------------------ |
+| 9    | **B2**：默认或文档明确启用 `trail_stop_fraction`             | ✅    | 三份 example YAML 含 `trail_stop_fraction: 0.02`；回测/live STOP 合并追踪价 |
+| 10   | **B3**：ATR 止损（与固定/追踪取最保守）                      | ✅    | `pytest tests/test_p2_strategy.py`；日志 `[live][atr_stop]` |
+| 11   | **B5**：最大持仓时间退出                                     | ✅    | `max_hold_hours: 48`；超时日志 `[live][exit] reason=max_hold:...` |
+| 12   | **C8**：`risk:` YAML 块补全至 testnet example                | ✅    | testnet/live/example 均含完整 `risk:` 块                     |
+| 13   | **E1–E2**：margin type 检查/设置                             | ✅    | `binance.margin_type` + 开仓前 `ensure_symbol_margin_type`；不匹配抛错 |
+| 14   | **F5**：USD-M 推荐参数写入 example YAML                      | ✅    | 见 `config/settings.*.example.yaml` 与 README「策略保护止损」 |
 
 ---
 

@@ -19,5 +19,6 @@ from roll.usdm_auto_trade import (  # noqa: F401
     resolve_open_quantity_raw,
     run_live_strategy_iteration,
     should_exit_from_trend,
+    should_exit_max_hold,
     stop_order_side_for_protect,
 )

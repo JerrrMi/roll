@@ -50,6 +50,12 @@ class StrategyLoopParams:
     min_monitor_symbols: int = 3
     public_rest_base: str | None = None
     trail_stop_fraction: float | None = None
+    # ATR 止损：entry ± atr_stop_k * ATR（与固定/追踪取最保守价）
+    atr_stop_k: float | None = None
+    atr_period: int = 14
+    atr_interval: str = "15m"
+    # 最大持仓时间（小时）；超时则市价平仓
+    max_hold_hours: float | None = None
     # 安全开关：`python -m main run-loop --no-dry-run`（Testnet signed）需显式 true
     testnet_signed_orders_enabled: bool = False
     # 安全开关：environment=live 时 signed 自动交易须显式 true
@@ -97,6 +103,28 @@ def parse_strategy_loop_params(settings: Mapping[str, Any]) -> StrategyLoopParam
         tf = float(tr)
         trail_frac = tf if tf > 0 else None
 
+    ask = raw.get("atr_stop_k")
+    atr_k: float | None = None
+    if isinstance(ask, (int, float)) and not isinstance(ask, bool):
+        ak = float(ask)
+        atr_k = ak if ak > 0 else None
+
+    ap = raw.get("atr_period")
+    atr_period = (
+        int(ap) if isinstance(ap, int) and not isinstance(ap, bool) else StrategyLoopParams.atr_period
+    )
+
+    ai = raw.get("atr_interval")
+    atr_interval = StrategyLoopParams.atr_interval
+    if isinstance(ai, str) and ai.strip():
+        atr_interval = ai.strip()
+
+    mhh = raw.get("max_hold_hours")
+    max_hold: float | None = None
+    if isinstance(mhh, (int, float)) and not isinstance(mhh, bool):
+        mh = float(mhh)
+        max_hold = mh if mh > 0 else None
+
     tso = raw.get("testnet_signed_orders_enabled")
     testnet_signed = bool(tso) if isinstance(tso, bool) else StrategyLoopParams.testnet_signed_orders_enabled
 
@@ -135,6 +163,10 @@ def parse_strategy_loop_params(settings: Mapping[str, Any]) -> StrategyLoopParam
         min_monitor_symbols=max(min_syms, 3),
         public_rest_base=pub_rest,
         trail_stop_fraction=trail_frac,
+        atr_stop_k=atr_k,
+        atr_period=max(atr_period, 1),
+        atr_interval=atr_interval,
+        max_hold_hours=max_hold,
         testnet_signed_orders_enabled=testnet_signed,
         live_trading_enabled=live_en,
         open_quantity_mode=oqm,

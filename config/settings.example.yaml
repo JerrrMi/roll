@@ -18,6 +18,9 @@ binance:
   # rest_base: "https://fapi.binance.com"
   # api_prefix: "/fapi/v1"
   recv_window_ms: 5000
+  # 逐仓 ISOLATED / 全仓 CROSSED；apply_margin_type=true 时在无持仓冲突下自动 POST /marginType
+  margin_type: ISOLATED
+  apply_margin_type: false
 
 # 人类可读资产代码；运行时需通过 USD-M exchangeInfo 映射到 USDT 永续 symbol（如 DOGEUSDT）
 candidates:
@@ -53,11 +56,29 @@ strategy:
   kelly_b: 1.2
   # 滚仓：每轮最多浮盈加仓次数（不含首次开仓）；加仓前须正浮盈且趋势仍达 long/short_threshold
   max_add_per_round: 3
-  # min_unrealized_profit_fraction: 0.01
-  # 可选：追踪 STOP（仍需满足初始底价 stop_adverse_fraction）；自动交易时需与 binance.rest_base 同源行情
-  # trail_stop_fraction: 0.02
+  min_unrealized_profit_fraction: 0.01
+  # USD-M 推荐保护止损（固定底价 + 追踪 + ATR 取最保守）
+  trail_stop_fraction: 0.02
+  atr_stop_k: 1.5
+  atr_period: 14
+  atr_interval: "15m"
+  max_hold_hours: 48
   # Live 模式下 public_rest_base 必须与 binance.rest_base 完全一致；dry-run-only 可看实盘公共行情：
   # public_rest_base: "https://fapi.binance.com"
+
+# 账户级风控（live / 回测共用；未配置时使用 risk.py 默认值）
+risk:
+  max_single_loss_fraction: 0.02
+  max_position_fraction: 0.15
+  max_drawdown_fraction: 0.15
+  max_daily_loss_fraction: 0.05
+  max_consecutive_losses: 3
+  cooldown_seconds: 3600
+  kelly_variant: HALF
+
+# 趋势退出：同向 score 低于 exit_threshold 时平仓（弱于开仓 long/short_threshold）
+trend_model:
+  exit_threshold: 0.35
 
 # 趋势评分模型默认值见代码 `TrendModelParams`；离线验收：
 #   conda activate roll-env

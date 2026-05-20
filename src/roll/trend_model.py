@@ -173,6 +173,20 @@ def _true_ranges(highs: Sequence[float], lows: Sequence[float], closes: Sequence
     return tr
 
 
+def wilder_atr_last(candles: Sequence[Candle], period: int = 14) -> float:
+    """最后一根 K 线对应的 Wilder ATR；数据不足时返回 ``nan``。"""
+    if period < 1 or len(candles) < period + 1:
+        return math.nan
+    highs = [float(c.high) for c in candles]
+    lows = [float(c.low) for c in candles]
+    closes = [float(c.close) for c in candles]
+    tr_s = _true_ranges(highs, lows, closes)
+    atr = sum(tr_s[1 : period + 1])
+    for i in range(period + 1, len(candles)):
+        atr = atr - (atr / period) + tr_s[i]
+    return float(atr)
+
+
 def _adx_di_series(
     highs: Sequence[float],
     lows: Sequence[float],
